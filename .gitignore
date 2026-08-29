@@ -1,0 +1,16 @@
+# Rust
+/daemon/target
+/daemon/.scratch-mapaki
+
+# Android / Gradle
+/app/local.properties
+/app/app/.android-sdk/
+/app/.jdk/
+/app/.gradle/
+/app/build/
+/app/app/build/
+/app/*.hprof
+/app/captures/
+/app/.cxx/
+*.iml
+.idea/

@@ -1,0 +1,26 @@
+# Template systemd unit for mapaki-daemon on beex.local.
+# Install: sudo cp mapaki-daemon.service /etc/systemd/system/
+#          sudo systemctl daemon-reload
+#          sudo systemctl enable --now mapaki-daemon
+# Read the pairing code with: journalctl -u mapaki-daemon -n 20 --no-pager
+#
+# Adjust User/ExecStart/MAPAKI_DIR below to match the account the binary
+# was uploaded under (see `just daemon-deploy`).
+
+[Unit]
+Description=mapaki-daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=CHANGE_ME
+ExecStart=/home/CHANGE_ME/mapaki-daemon
+Environment=MAPAKI_DIR=/home/CHANGE_ME/mapaki
+Environment=MAPAKI_PORT=8420
+Environment=RUST_LOG=info
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

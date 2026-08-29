@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The daemon on beex.local is only ever spoken to over the home LAN in plain
+  HTTP (the SSID check itself is the trust boundary there). Everything else,
+  including the mapaki.makeavoy.com fallback, still requires TLS.
+-->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">beex.local</domain>
+    </domain-config>
+    <base-config cleartextTrafficPermitted="false" />
+</network-security-config>

@@ -1,0 +1,28 @@
+[package]
+name = "mapaki-daemon"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = { version = "0.7", features = ["multipart"] }
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["io"] }
+tower-http = { version = "0.5", features = ["trace"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+rand = "0.8"
+sha2 = "0.10"
+subtle = "2"
+mime_guess = "2"
+data-encoding = "2"
+
+[dev-dependencies]
+tempdir = "0.3"
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
