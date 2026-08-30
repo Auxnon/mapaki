@@ -1,7 +1,12 @@
 package com.makeavoy.mapaki.data.net
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
+import android.location.LocationManager
 import android.net.wifi.WifiManager
+import androidx.core.content.ContextCompat
+import androidx.core.location.LocationManagerCompat
 
 /** The dog emoji SSID that marks the home network. */
 private const val HOME_SSID = "🐕"
@@ -14,6 +19,25 @@ fun currentBaseUrl(context: Context): String =
     if (currentSsid(context) == HOME_SSID) LAN_BASE_URL else REMOTE_BASE_URL
 
 fun isOnHomeNetwork(context: Context): Boolean = currentSsid(context) == HOME_SSID
+
+/**
+ * Explains *why* the SSID read might be failing — the two ways Android hides
+ * it are silent (getConnectionInfo() just returns "<unknown ssid>"), which
+ * looks identical to "not on the home network" unless called out explicitly.
+ */
+fun ssidReadIssue(context: Context): String? {
+    val hasPermission = ContextCompat.checkSelfPermission(
+        context,
+        Manifest.permission.ACCESS_FINE_LOCATION,
+    ) == PackageManager.PERMISSION_GRANTED
+    if (!hasPermission) return "location permission not granted — SSID can't be read"
+
+    val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
+    if (locationManager != null && !LocationManagerCompat.isLocationEnabled(locationManager)) {
+        return "device Location is off — SSID can't be read"
+    }
+    return null
+}
 
 private fun currentSsid(context: Context): String? {
     val wifiManager =

@@ -3,7 +3,6 @@ package com.makeavoy.mapaki
 import android.Manifest
 import android.content.Intent
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -66,13 +65,16 @@ private fun AppRoot(
     val scope = rememberCoroutineScope()
     val items by viewModel.items.collectAsState()
 
-    val permission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        Manifest.permission.NEARBY_WIFI_DEVICES
-    } else {
-        Manifest.permission.ACCESS_FINE_LOCATION
+    // The SSID is location data on every Android version, so this permission is what makes
+    // network-mode detection work at all. Bump a tick on the result so the pairing screen's
+    // "Connecting to: ..." line (a plain getter, not Compose State) re-reads once it's granted,
+    // instead of only updating on the next unrelated recomposition.
+    var permissionTick by remember { mutableStateOf(0) }
+    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+        permissionTick++
     }
-    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
-    LaunchedEffect(Unit) { permissionLauncher.launch(permission) }
+    LaunchedEffect(Unit) { permissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION) }
+    val targetDescription = remember(permissionTick, viewModel.isPaired) { viewModel.targetDescription }
 
     // Share-to-app intents (links and images).
     LaunchedEffect(incomingIntent) {
@@ -120,6 +122,7 @@ private fun AppRoot(
         PairingScreen(
             error = viewModel.pairError,
             isSubmitting = viewModel.isBusy,
+            targetDescription = targetDescription,
             onSubmit = { code -> viewModel.pair(code) },
         )
     } else {

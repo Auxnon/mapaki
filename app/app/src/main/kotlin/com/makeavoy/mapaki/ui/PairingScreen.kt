@@ -19,6 +19,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 
@@ -26,6 +28,7 @@ import androidx.compose.ui.unit.dp
 fun PairingScreen(
     error: String?,
     isSubmitting: Boolean,
+    targetDescription: String,
     onSubmit: (String) -> Unit,
 ) {
     var code by remember { mutableStateOf("") }
@@ -42,12 +45,20 @@ fun PairingScreen(
                 style = MaterialTheme.typography.bodyMedium,
                 textAlign = TextAlign.Center,
             )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Connecting to: $targetDescription",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+            )
             Spacer(Modifier.height(24.dp))
             OutlinedTextField(
                 value = code,
                 onValueChange = { code = it },
                 label = { Text("Pairing code") },
                 singleLine = true,
+                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters),
                 modifier = Modifier.fillMaxWidth(),
             )
             if (error != null) {

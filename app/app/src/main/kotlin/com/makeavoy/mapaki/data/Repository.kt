@@ -7,6 +7,8 @@ import com.makeavoy.mapaki.data.net.ApiClient
 import com.makeavoy.mapaki.data.net.MdnsDns
 import com.makeavoy.mapaki.data.net.MdnsResolver
 import com.makeavoy.mapaki.data.net.currentBaseUrl
+import com.makeavoy.mapaki.data.net.isOnHomeNetwork
+import com.makeavoy.mapaki.data.net.ssidReadIssue
 import com.makeavoy.mapaki.data.store.AuthStore
 import com.makeavoy.mapaki.data.store.LocalIndexStore
 import kotlinx.coroutines.flow.StateFlow
@@ -32,10 +34,21 @@ class Repository(private val context: Context) {
 
     val isPaired: Boolean get() = authStore.token != null
 
+    /** What the pairing screen shows so a wrong-network mismatch is obvious instead of a mystery failure. */
+    fun targetDescription(): String {
+        val onHome = isOnHomeNetwork(context)
+        val status = if (onHome) "on home network" else "not on home network"
+        val issue = ssidReadIssue(context)?.let { " — $it" }.orEmpty()
+        return "${baseUrl()} ($status)$issue"
+    }
+
     private fun baseUrl() = currentBaseUrl(context)
 
     suspend fun pair(otp: String) {
-        val token = api.pair(baseUrl(), otp.trim())
+        // The daemon's OTP alphabet (data_encoding::BASE32_NOPAD) is uppercase-only and
+        // compared byte-for-byte, so a lowercased keyboard autocorrect looks right to the
+        // eye but silently fails — normalize case here rather than relying on the keyboard.
+        val token = api.pair(baseUrl(), otp.trim().uppercase())
         authStore.token = token
         sync()
     }

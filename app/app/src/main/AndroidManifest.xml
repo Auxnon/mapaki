@@ -6,14 +6,14 @@
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
 
-    <!-- Android 13+: read the current SSID without needing location. -->
-    <uses-permission
-        android:name="android.permission.NEARBY_WIFI_DEVICES"
-        android:usesPermissionFlags="neverForLocation" />
-    <!-- Pre-13 fallback: SSID is only exposed via a location permission. -->
-    <uses-permission
-        android:name="android.permission.ACCESS_FINE_LOCATION"
-        android:maxSdkVersion="32" />
+    <!--
+      The SSID is itself location data, so Android only exposes it through
+      getConnectionInfo() when this is held (on every OS version — the
+      newer NEARBY_WIFI_DEVICES permission looked like a fit, but only when
+      declared *without* the neverForLocation flag, which then still folds
+      back to needing this anyway, and device Location must be toggled on).
+    -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
 
     <application
         android:allowBackup="false"

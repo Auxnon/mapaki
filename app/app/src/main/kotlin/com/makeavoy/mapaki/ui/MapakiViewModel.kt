@@ -23,6 +23,8 @@ class MapakiViewModel(app: Application) : AndroidViewModel(app) {
     var pairError by mutableStateOf<String?>(null)
         private set
 
+    val targetDescription: String get() = repo.targetDescription()
+
     init {
         if (isPaired) refresh()
     }

@@ -98,7 +98,7 @@ class ApiClient(private val client: OkHttpClient) {
                 .build()
             client.newCall(withAuth(request, token)).execute().use { response ->
                 if (!response.isSuccessful) {
-                    throw ApiException("request failed", response.code)
+                    throw httpError(request, response.code, response.body?.string())
                 }
                 response.body?.bytes() ?: ByteArray(0)
             }
@@ -107,14 +107,25 @@ class ApiClient(private val client: OkHttpClient) {
     private fun withAuth(request: Request, token: String?): Request =
         if (token == null) request else request.newBuilder().addHeader("Authorization", "Bearer $token").build()
 
+    /** Always names the URL actually hit and the raw status/body — a blank body is not swallowed into "request failed". */
     private fun execute(request: Request, token: String?): String {
-        client.newCall(withAuth(request, token)).execute().use { response ->
-            val text = response.body?.string().orEmpty()
-            if (!response.isSuccessful) {
-                throw ApiException(text.ifBlank { "request failed" }, response.code)
+        val response = try {
+            client.newCall(withAuth(request, token)).execute()
+        } catch (e: IOException) {
+            throw ApiException("couldn't reach ${request.url}: ${e.javaClass.simpleName} ${e.message}", -1)
+        }
+        response.use {
+            val text = it.body?.string().orEmpty()
+            if (!it.isSuccessful) {
+                throw httpError(request, it.code, text)
             }
             return text
         }
+    }
+
+    private fun httpError(request: Request, code: Int, body: String?): ApiException {
+        val detail = body?.takeIf { it.isNotBlank() } ?: "(empty response body)"
+        return ApiException("HTTP $code from ${request.url}: $detail", code)
     }
 
     companion object {
