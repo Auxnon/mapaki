@@ -14,7 +14,8 @@ enum class FileKind {
 data class FileItem(
     val id: String,
     val name: String,
-    val kind: FileKind,
+    /** Unknown kinds from a newer server decode as FILE (see coerceInputValues). */
+    val kind: FileKind = FileKind.FILE,
     val size: Long,
     @SerialName("added_at") val addedAt: Long,
     val position: Long,
@@ -24,3 +25,8 @@ data class FileItem(
     val hash: String = "",
     val deleted: Boolean = false,
 )
+
+/** Notes and links are TOML files told apart by extension (see data/notes). */
+val FileItem.isNote: Boolean get() = name.endsWith(".note", ignoreCase = true)
+
+val FileItem.isLink: Boolean get() = kind == FileKind.LINK || name.endsWith(".link", ignoreCase = true)

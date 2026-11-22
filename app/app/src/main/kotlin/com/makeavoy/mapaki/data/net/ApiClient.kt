@@ -26,7 +26,7 @@ class ConflictException(val current: FileItem) : IOException("conflict on ${curr
 data class Changes(val seq: Long, val entries: List<FileItem>)
 
 class ApiClient(private val client: OkHttpClient) {
-    private val json = Json { ignoreUnknownKeys = true }
+    private val json = Json { ignoreUnknownKeys = true; coerceInputValues = true }
 
     @Serializable
     private data class PairRequest(val otp: String, val device: String)
@@ -42,6 +42,15 @@ class ApiClient(private val client: OkHttpClient) {
 
     @Serializable
     private data class ConflictBody(val entry: FileItem)
+
+    @Serializable
+    private data class PutResponse(val result: String, val entry: FileItem)
+
+    /** Bytes plus the revision they are (`x-mapaki-rev`), to base an edit on. */
+    class Content(val bytes: ByteArray, val rev: String?)
+
+    /** Outcome of a content upload: "fast_forward", "merged" or "unchanged", and the new entry. */
+    class Saved(val result: String, val entry: FileItem)
 
     suspend fun pair(baseUrl: String, otp: String, device: String): String = withContext(Dispatchers.IO) {
         val body = json.encodeToString(PairRequest(otp, device)).toRequestBody(JSON)
@@ -147,6 +156,45 @@ class ApiClient(private val client: OkHttpClient) {
             json.decodeFromString(execute(request, token))
         }
 
+    /**
+     * New content for an existing file, based on revision [base]. The server
+     * fast-forwards, merges text edits cleanly, or throws [ConflictException];
+     * [force] overwrites (still recorded as a new revision).
+     */
+    suspend fun putContent(
+        baseUrl: String,
+        token: String,
+        id: String,
+        bytes: ByteArray,
+        base: String?,
+        force: Boolean,
+    ): Saved = withContext(Dispatchers.IO) {
+        val query = buildString {
+            append("?force=").append(force)
+            if (!base.isNullOrEmpty()) append("&base=").append(base)
+        }
+        val request = Request.Builder()
+            .url(baseUrl.trimEnd('/') + "/files/$id/content$query")
+            .put(bytes.toRequestBody(OCTETS))
+            .build()
+        val text = try {
+            execute(request, token)
+        } catch (e: ApiException) {
+            if (e.code != 409) throw e
+            throw ConflictException(json.decodeFromString<ConflictBody>(e.body).entry)
+        }
+        json.decodeFromString<PutResponse>(text).let { Saved(it.result, it.entry) }
+    }
+
+    suspend fun fetchContentWithRev(baseUrl: String, token: String, id: String): Content =
+        withContext(Dispatchers.IO) {
+            val request = Request.Builder().url(baseUrl.trimEnd('/') + "/files/$id/content").get().build()
+            client.newCall(withAuth(request, token)).execute().use { response ->
+                if (!response.isSuccessful) throw httpError(request, response.code, response.body?.string())
+                Content(response.body?.bytes() ?: ByteArray(0), response.header("x-mapaki-rev"))
+            }
+        }
+
     suspend fun fetchContent(baseUrl: String, token: String, id: String): ByteArray =
         withContext(Dispatchers.IO) {
             val request = Request.Builder()
@@ -187,5 +235,6 @@ class ApiClient(private val client: OkHttpClient) {
 
     companion object {
         private val JSON = "application/json".toMediaTypeOrNull()
+        private val OCTETS = "application/octet-stream".toMediaTypeOrNull()
     }
 }

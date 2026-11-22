@@ -6,10 +6,15 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.makeavoy.mapaki.data.OpenNote
 import com.makeavoy.mapaki.data.Repository
 import com.makeavoy.mapaki.data.ShareResult
 import com.makeavoy.mapaki.data.model.FileItem
+import com.makeavoy.mapaki.data.model.isLink
+import com.makeavoy.mapaki.data.model.isNote
 import com.makeavoy.mapaki.data.net.ConflictException
+import com.makeavoy.mapaki.data.notes.Note
+import com.makeavoy.mapaki.data.notes.nowRfc3339
 import com.makeavoy.mapaki.sync.SyncScheduler
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -21,6 +26,19 @@ import kotlinx.coroutines.launch
 
 /** A delete that raced an edit on another device, waiting on the user. */
 data class DeleteConflict(val item: FileItem)
+
+/** A full-screen page over the grid. */
+sealed interface Page {
+    data class Viewing(val open: OpenNote) : Page
+
+    /** [open] is null for a new note. */
+    data class Editing(val open: OpenNote?, val draft: Note) : Page
+}
+
+/** An edited note whose original changed elsewhere in a way that didn't merge. */
+data class NoteConflict(val open: OpenNote, val mine: Note)
+
+enum class Keep { MINE, THEIRS, BOTH }
 
 class MapakiViewModel(app: Application) : AndroidViewModel(app) {
     private val repo = Repository(app)
@@ -35,6 +53,17 @@ class MapakiViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var deleteConflict by mutableStateOf<DeleteConflict?>(null)
         private set
+
+    var page by mutableStateOf<Page?>(null)
+        private set
+    var isSaving by mutableStateOf(false)
+        private set
+    var noteConflict by mutableStateOf<NoteConflict?>(null)
+        private set
+
+    private val _openUrls = MutableSharedFlow<String>(extraBufferCapacity = 1)
+    /** Links the user tapped, for the activity to hand to a browser. */
+    val openUrls: SharedFlow<String> = _openUrls
 
     private val _toasts = MutableSharedFlow<String>(extraBufferCapacity = 8)
     /** Short messages for a Toast: share results, sync failures worth knowing about. */
@@ -108,14 +137,114 @@ class MapakiViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun addFile(name: String, bytes: ByteArray, mimeType: String) {
+        viewModelScope.launch { afterShare(repo.addFile(name, bytes, mimeType)) }
+    }
+
+    /**
+     * Shared text: a URL (optionally with a few words around it, as many apps
+     * send "Page title https://...") becomes a `.link`, anything else a `.note`.
+     */
+    fun shareText(text: String, subject: String?) {
         viewModelScope.launch {
-            when (val result = repo.addFile(name, bytes, mimeType)) {
-                is ShareResult.Synced -> _toasts.tryEmit("Synced ${result.name}")
-                is ShareResult.Queued -> _toasts.tryEmit("Saved ${result.name} — will sync when the server is reachable")
+            val url = URL.find(text)?.value
+            val rest = url?.let { text.replace(it, "").trim() }
+            val result = if (url != null && rest!!.length <= 200 && '\n' !in rest) {
+                repo.addLink(url, subject?.takeIf { it.isNotBlank() } ?: rest.ifEmpty { null })
+            } else {
+                repo.addNote(Note(title = subject.orEmpty().trim(), created = nowRfc3339(), body = text))
             }
-            // A share is also a fresh check: pull anything other devices did meanwhile.
-            SyncScheduler.reset(getApplication())
-            refreshNow()
+            afterShare(result)
+        }
+    }
+
+    private suspend fun afterShare(result: ShareResult) {
+        when (result) {
+            is ShareResult.Synced -> _toasts.tryEmit("Synced ${result.name}")
+            is ShareResult.Queued -> _toasts.tryEmit("Saved ${result.name} — will sync when the server is reachable")
+        }
+        // A share is also a fresh check: pull anything other devices did meanwhile.
+        SyncScheduler.reset(getApplication())
+        refreshNow()
+    }
+
+    /** Tap on a tile: notes open in the viewer, links in the browser. */
+    fun open(item: FileItem) {
+        viewModelScope.launch {
+            when {
+                item.isNote -> repo.openNote(item.id)?.let { page = Page.Viewing(it) }
+                    ?: _toasts.tryEmit("Couldn't open ${item.name} — not on this device yet")
+                item.isLink -> repo.linkUrl(item.id)?.takeIf { it.isNotBlank() }?.let { _openUrls.tryEmit(it) }
+            }
+        }
+    }
+
+    fun newNote() {
+        page = Page.Editing(null, Note(created = nowRfc3339()))
+    }
+
+    fun editNote(open: OpenNote) {
+        page = Page.Editing(open, open.note)
+    }
+
+    /** Back: editor -> viewer (or the grid for a new note), viewer -> grid. */
+    fun closePage() {
+        page = when (val p = page) {
+            is Page.Editing -> p.open?.let { Page.Viewing(it) }
+            else -> null
+        }
+    }
+
+    fun saveNote(edited: Note) {
+        val editing = page as? Page.Editing ?: return
+        viewModelScope.launch {
+            isSaving = true
+            try {
+                val open = editing.open
+                if (open == null) {
+                    val result = repo.addNote(edited)
+                    page = null
+                    afterShare(result)
+                } else if (edited.toToml() == open.note.toToml()) {
+                    page = Page.Viewing(open)
+                } else {
+                    val saved = repo.saveNote(open, edited)
+                    if (saved.result == "merged") _toasts.tryEmit("Saved — merged with changes from another device")
+                    page = Page.Viewing(repo.openNote(open.item.id) ?: OpenNote(saved.entry, edited, saved.entry.head))
+                }
+            } catch (e: ConflictException) {
+                noteConflict = NoteConflict(editing.open!!, edited)
+            } catch (_: Exception) {
+                _toasts.tryEmit("Couldn't save — server unreachable. Your edit is still open.")
+            } finally {
+                isSaving = false
+            }
+        }
+    }
+
+    /** Answer to a [NoteConflict]; null (dismissed) goes back to editing. */
+    fun resolveNoteConflict(keep: Keep?) {
+        val conflict = noteConflict ?: return
+        noteConflict = null
+        if (keep == null) return
+        viewModelScope.launch {
+            isSaving = true
+            try {
+                when (keep) {
+                    // Theirs stays in the file's history either way.
+                    Keep.MINE -> repo.saveNote(conflict.open, conflict.mine, force = true)
+                    Keep.THEIRS -> Unit
+                    Keep.BOTH -> repo.addNote(
+                        conflict.mine.copy(title = conflict.mine.displayTitle + " (conflict copy)", created = nowRfc3339()),
+                    )
+                }
+                refreshNow()
+                page = repo.openNote(conflict.open.item.id)?.let { Page.Viewing(it) }
+            } catch (_: Exception) {
+                noteConflict = conflict
+                _toasts.tryEmit("Couldn't save — server unreachable. Your edit is still open.")
+            } finally {
+                isSaving = false
+            }
         }
     }
 
@@ -170,6 +299,7 @@ class MapakiViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun contentBytes(id: String): ByteArray? = repo.contentBytes(id)
 
     companion object {
+        private val URL = Regex("https?://[^\\s<>\"]+")
         private const val MIN_RETRY_MS = 60_000L
         private const val MAX_RETRY_MS = 60 * 60_000L
     }

@@ -26,7 +26,11 @@ import com.makeavoy.mapaki.data.model.FileItem
 import com.makeavoy.mapaki.data.net.displayNameFor
 import com.makeavoy.mapaki.data.net.mimeTypeFor
 import com.makeavoy.mapaki.data.net.readAllBytes
+import com.makeavoy.mapaki.ui.Keep
 import com.makeavoy.mapaki.ui.MapakiScreen
+import com.makeavoy.mapaki.ui.NoteEditorScreen
+import com.makeavoy.mapaki.ui.NoteViewerScreen
+import com.makeavoy.mapaki.ui.Page
 import com.makeavoy.mapaki.ui.MapakiViewModel
 import com.makeavoy.mapaki.ui.PairingScreen
 import com.makeavoy.mapaki.ui.theme.MapakiTheme
@@ -83,6 +87,12 @@ private fun AppRoot(
     LaunchedEffect(Unit) {
         viewModel.toasts.collect { Toast.makeText(context, it, Toast.LENGTH_SHORT).show() }
     }
+    LaunchedEffect(Unit) {
+        viewModel.openUrls.collect { url ->
+            runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
+                .onFailure { Toast.makeText(context, "No app can open $url", Toast.LENGTH_SHORT).show() }
+        }
+    }
 
     // The SSID is location data on every Android version, so this permission is what makes
     // network-mode detection work at all. Bump a tick on the result so the pairing screen's
@@ -105,7 +115,7 @@ private fun AppRoot(
                 val text = intent.getStringExtra(Intent.EXTRA_TEXT)
                 when {
                     uri != null -> importUri(context, viewModel, uri)
-                    text != null -> viewModel.addFile(nameForSharedText(text), text.toByteArray(), "text/plain")
+                    text != null -> viewModel.shareText(text, intent.getStringExtra(Intent.EXTRA_SUBJECT))
                 }
             }
             Intent.ACTION_SEND_MULTIPLE -> {
@@ -142,13 +152,27 @@ private fun AppRoot(
             targetDescription = targetDescription,
             onSubmit = { code -> viewModel.pair(code) },
         )
-    } else {
-        MapakiScreen(
+    } else when (val page = viewModel.page) {
+        is Page.Viewing -> NoteViewerScreen(
+            note = page.open.note,
+            onEdit = { viewModel.editNote(page.open) },
+            onBack = viewModel::closePage,
+        )
+        is Page.Editing -> NoteEditorScreen(
+            initial = page.draft,
+            isNew = page.open == null,
+            isSaving = viewModel.isSaving,
+            onSave = viewModel::saveNote,
+            onCancel = viewModel::closePage,
+        )
+        null -> MapakiScreen(
             items = items,
             isSyncing = viewModel.isBusy,
             thumbnailProvider = { item -> viewModel.contentBytes(item.id) },
             onReorder = viewModel::reorder,
             onImport = { importLauncher.launch(arrayOf("*/*")) },
+            onNewNote = viewModel::newNote,
+            onOpen = viewModel::open,
             onExport = { item ->
                 pendingExport = item
                 exportLauncher.launch(item.name)
@@ -156,6 +180,29 @@ private fun AppRoot(
             onRename = { item, newName -> viewModel.rename(item.id, newName) },
             onDelete = { item -> viewModel.delete(item.id) },
         )
+    }
+    if (viewModel.isPaired) {
+        viewModel.noteConflict?.let { conflict ->
+            AlertDialog(
+                onDismissRequest = { viewModel.resolveNoteConflict(null) },
+                title = { Text("Changed on another device") },
+                text = {
+                    Text(
+                        "\"${conflict.open.note.displayTitle}\" was edited elsewhere too, and the changes overlap. " +
+                            "Whichever you don't keep stays in the note's history.",
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = { viewModel.resolveNoteConflict(Keep.MINE) }) { Text("Keep mine") }
+                },
+                dismissButton = {
+                    androidx.compose.foundation.layout.Row {
+                        TextButton(onClick = { viewModel.resolveNoteConflict(Keep.BOTH) }) { Text("Keep both") }
+                        TextButton(onClick = { viewModel.resolveNoteConflict(Keep.THEIRS) }) { Text("Keep theirs") }
+                    }
+                },
+            )
+        }
         viewModel.deleteConflict?.let { conflict ->
             AlertDialog(
                 onDismissRequest = { viewModel.resolveDeleteConflict(deleteAnyway = false) },
@@ -170,15 +217,6 @@ private fun AppRoot(
             )
         }
     }
-}
-
-/** A shared URL becomes a .link tile; any other shared text becomes a note. */
-private fun nameForSharedText(text: String): String {
-    val stamp = System.currentTimeMillis()
-    val trimmed = text.trim()
-    val isUrl = !trimmed.contains(' ') && !trimmed.contains('\n') &&
-        (trimmed.startsWith("http://") || trimmed.startsWith("https://"))
-    return if (isUrl) "link-$stamp.link" else "note-$stamp.txt"
 }
 
 private fun importUri(context: android.content.Context, viewModel: MapakiViewModel, uri: Uri) {

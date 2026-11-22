@@ -55,6 +55,17 @@ renames. Sent files are also copied into your local folder. A local copy with ed
 that haven't synced yet is left alone, and the next `mapaki sync` sorts it out like
 any other conflict.
 
+Browse, search and edit your notes in the terminal:
+
+```sh
+mapaki notes
+```
+
+`/` searches, `Enter` reads, `e` edits the note in `$EDITOR` (the title on the
+first line, then the body), `n` writes a new one, and `o` opens a note's images in
+your image viewer. If `mapaki run` is active, it syncs your edits. Otherwise
+`mapaki notes` syncs when it opens and after each save.
+
 If the server is reachable at more than one address (say, LAN first and a public
 hostname as fallback), add the others. They are tried in order:
 
@@ -70,8 +81,11 @@ Download `mapaki-android.apk` from the
 You'll need to allow installs from your browser or file manager. Open the app and
 enter a pairing code.
 
-Share links, text, images or any other file to **Mapaki**. A toast confirms it
-synced. If the server isn't reachable, the share is saved on the phone and uploaded
+Share links, text, images or any other file to **Mapaki**. A shared URL is saved as
+a `.link` with the page's title and a small preview image. Shared text becomes a
+`.note`. Tap **+** to write a note (with photos) or import files. Tap a note to read
+it, then the pencil to edit it. Tap a link to open it in your browser. A toast
+confirms each share synced. If the server isn't reachable, the share is saved on the phone and uploaded
 on the next sync (when you open the app, share again, or the background check runs).
 A share always arrives as a new file. If its name is taken by then, it gets a free
 one, so a share that waited offline never overwrites anything.
@@ -129,6 +143,50 @@ background limits.
     4 hours. Only unmetered (Wi-Fi) networks are used. Any change found resets the
     wait to 15 minutes.
 
+## Notes and links
+
+Notes (`.note`) and links (`.link`) are small TOML files, so they sync, version and
+merge like any other text file, and you can edit them by hand. Images are embedded
+as base64, so a note and its pictures are always one file.
+
+```toml
+# Groceries.note
+title = "Groceries"
+created = "2026-11-22T18:00:00Z"
+body = """
+Milk, eggs.
+![receipt](receipt.jpg)
+"""
+
+[[images]]
+name = "receipt.jpg"
+type = "image/jpeg"
+data = "/9j/4AAQSkZJRgABAQ..."
+```
+
+A body line that is just `![alt](name)` shows that image there. Images the body
+doesn't place show at the end. The app shrinks large photos to at most 1600 px
+before embedding them.
+
+```toml
+# Some article.link
+url = "https://example.com/article"
+title = "Some article"
+description = "What the page says about itself"
+site = "example.com"
+saved = "2026-11-22T18:00:00Z"
+
+[preview]                  # optional: the page's og:image, 320 px wide
+name = "preview.jpg"
+type = "image/jpeg"
+data = "/9j/4AAQSkZJRgABAQ..."
+```
+
+Every client writes exactly the same layout (both test suites check against
+`fixtures/sample.note`). Edits to different parts of a note from two devices
+therefore merge cleanly on the server. Reading is lenient: any valid TOML works, a
+plain text file opens as a note, and v0.1 `.link` files (just the URL) still open.
+
 ## Building from source
 
 ```sh
@@ -185,6 +243,8 @@ All endpoints except `/health`, `/version` and `/pair` need `Authorization: Bear
 - **Windows and macOS:** the client is written to be portable (it uses each OS's
   file watcher, and sends notifications on macOS) but isn't packaged or tested on
   those systems yet.
+- **Android note edits need the server:** saving an edit offline keeps the
+  editor open rather than queueing it. New notes and shares do queue.
 - **Not yet supported:**
   - Subfolders: the sync folder is one flat folder.
   - Rename tracking: a rename is detected only when the content is unchanged.

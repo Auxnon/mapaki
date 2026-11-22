@@ -18,7 +18,7 @@ import java.io.File
  */
 class LocalIndexStore(context: Context) {
     private val file = File(context.filesDir, "files-index.json")
-    private val json = Json { ignoreUnknownKeys = true }
+    private val json = Json { ignoreUnknownKeys = true; coerceInputValues = true }
 
     private val _items = MutableStateFlow(load())
     val items: StateFlow<List<FileItem>> = _items

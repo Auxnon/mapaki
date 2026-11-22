@@ -5,6 +5,10 @@ import android.net.wifi.WifiManager
 import android.os.Build
 import com.makeavoy.mapaki.data.model.FileItem
 import com.makeavoy.mapaki.data.net.ApiClient
+import com.makeavoy.mapaki.data.notes.LinkCard
+import com.makeavoy.mapaki.data.notes.LinkPreview
+import com.makeavoy.mapaki.data.notes.Note
+import com.makeavoy.mapaki.data.notes.fileStemFor
 import com.makeavoy.mapaki.data.net.MdnsDns
 import com.makeavoy.mapaki.data.net.MdnsResolver
 import com.makeavoy.mapaki.data.net.currentBaseUrl
@@ -21,6 +25,9 @@ import kotlinx.coroutines.sync.withLock
 import okhttp3.OkHttpClient
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
+
+/** A note opened for reading or editing, with the revision its content is. */
+data class OpenNote(val item: FileItem, val note: Note, val base: String?)
 
 /** What happened to a share, for the toast. */
 sealed interface ShareResult {
@@ -44,6 +51,7 @@ class Repository(private val context: Context) {
         .readTimeout(60, TimeUnit.SECONDS)
         .build()
     private val api = ApiClient(httpClient)
+    private val linkPreview = LinkPreview()
 
     val isPaired: Boolean get() = authStore.token != null
 
@@ -130,6 +138,60 @@ class Repository(private val context: Context) {
         }
     }
 
+    /** Saves a new note; queued like any share if the server can't be reached. */
+    suspend fun addNote(note: Note): ShareResult =
+        addFile(fileStemFor(note.displayTitle, "note") + ".note", note.toBytes(), NOTE_MIME)
+
+    /**
+     * Saves a shared URL as a `.link`, with the page's title and a small
+     * preview image when the page can be fetched (the internet may be up even
+     * when the mapaki server isn't, so this happens before queueing).
+     */
+    suspend fun addLink(url: String, subject: String?): ShareResult {
+        val card = linkPreview.card(url, fallbackTitle = subject.orEmpty())
+        return addFile(fileStemFor(card.displayTitle, "link") + ".link", card.toBytes(), NOTE_MIME)
+    }
+
+    /**
+     * A note's content and the revision it is. Uses the on-device copy when it
+     * matches the latest known head, so notes open offline too.
+     */
+    suspend fun openNote(id: String): OpenNote? {
+        val item = localIndex.items.value.firstOrNull { it.id == id } ?: return null
+        val local = mirror.read(id)
+        if (local != null && item.hash.isNotEmpty() && mirror.hashOf(id) == item.hash) {
+            return OpenNote(item, Note.parse(local), item.head)
+        }
+        val token = authStore.token
+        val fresh = token?.let { runCatching { api.fetchContentWithRev(baseUrl(), it, id) }.getOrNull() }
+        if (fresh != null) {
+            mirror.write(id, sha256(fresh.bytes), fresh.bytes)
+            return OpenNote(item, Note.parse(fresh.bytes), fresh.rev)
+        }
+        // Stale copy and no server: still readable; editing it would conflict-check against nothing.
+        return local?.let { OpenNote(item, Note.parse(it), null) }
+    }
+
+    /**
+     * Uploads an edited note based on the revision it was opened at. The
+     * server fast-forwards or merges cleanly; otherwise this throws
+     * [com.makeavoy.mapaki.data.net.ConflictException]. [force] keeps this
+     * version over the other device's (which stays in history).
+     */
+    suspend fun saveNote(open: OpenNote, edited: Note, force: Boolean = false): ApiClient.Saved {
+        val token = authStore.token ?: error("not paired")
+        val bytes = edited.toBytes()
+        val saved = api.putContent(baseUrl(), token, open.item.id, bytes, open.base, force)
+        localIndex.updateOne(saved.entry)
+        // A merge means the server's copy is ours plus theirs; keep that one.
+        val content = if (saved.result == "merged") api.fetchContent(baseUrl(), token, saved.entry.id) else bytes
+        mirror.write(saved.entry.id, sha256(content), content)
+        return saved
+    }
+
+    /** A link's URL, from the on-device copy when there is one. */
+    suspend fun linkUrl(id: String): String? = contentBytes(id)?.let { LinkCard.parse(it).url }
+
     suspend fun rename(id: String, newName: String) {
         val token = authStore.token ?: return
         localIndex.updateOne(api.rename(baseUrl(), token, id, newName))
@@ -175,6 +237,8 @@ class Repository(private val context: Context) {
     }
 
     companion object {
+        private const val NOTE_MIME = "application/toml"
+
         /** Activity and background worker each build a Repository; never sync twice at once. */
         private val syncLock = Mutex()
 

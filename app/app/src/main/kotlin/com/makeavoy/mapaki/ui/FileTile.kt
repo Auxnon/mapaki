@@ -43,13 +43,21 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.material.icons.automirrored.filled.Notes
+import androidx.compose.ui.text.font.FontWeight
 import com.makeavoy.mapaki.data.model.FileItem
 import com.makeavoy.mapaki.data.model.FileKind
+import com.makeavoy.mapaki.data.model.isLink
+import com.makeavoy.mapaki.data.model.isNote
+import com.makeavoy.mapaki.data.notes.Images
+import com.makeavoy.mapaki.data.notes.LinkCard
+import com.makeavoy.mapaki.data.notes.Note
 
 @Composable
 fun FileTile(
     item: FileItem,
     thumbnailProvider: suspend (FileItem) -> ByteArray?,
+    onOpen: () -> Unit,
     onExport: () -> Unit,
     onRename: (String) -> Unit,
     onDelete: () -> Unit,
@@ -59,43 +67,63 @@ fun FileTile(
     var renaming by remember { mutableStateOf(false) }
     var renameText by remember(item.name) { mutableStateOf(item.name) }
     var bitmap by remember(item.id, item.hash) { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
+    // Notes and links are parsed from the on-device copy for their tile.
+    var note by remember(item.id, item.hash) { mutableStateOf<Note?>(null) }
+    var link by remember(item.id, item.hash) { mutableStateOf<LinkCard?>(null) }
 
-    if (item.kind == FileKind.IMAGE) {
-        LaunchedEffect(item.id, item.hash) {
-            val bytes = thumbnailProvider(item)
-            if (bytes != null) {
-                val decoded = runCatching { BitmapFactory.decodeByteArray(bytes, 0, bytes.size) }.getOrNull()
-                bitmap = decoded?.asImageBitmap()
+    LaunchedEffect(item.id, item.hash) {
+        val wanted = item.kind == FileKind.IMAGE || item.isNote || item.isLink
+        val bytes = if (wanted) thumbnailProvider(item) else null
+        if (bytes != null) {
+            val image = when {
+                item.isNote -> Note.parse(bytes).also { note = it }.images.firstOrNull()?.data
+                item.isLink -> LinkCard.parse(bytes).also { link = it }.preview?.data
+                else -> bytes
             }
+            bitmap = image?.let { Images.decodeSampled(it, 512)?.asImageBitmap() }
         }
     }
 
-    Card(modifier = modifier.aspectRatio(1f).fillMaxWidth()) {
+    val caption = when {
+        item.isNote -> note?.displayTitle ?: item.name.removeSuffix(".note")
+        item.isLink -> link?.displayTitle ?: item.name.removeSuffix(".link")
+        else -> item.name
+    }
+
+    Card(onClick = onOpen, modifier = modifier.aspectRatio(1f).fillMaxWidth()) {
         Box(Modifier.fillMaxSize()) {
             when {
-                item.kind == FileKind.IMAGE && bitmap != null -> Image(
+                bitmap != null -> Image(
                     bitmap = bitmap!!,
                     contentDescription = item.name,
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop,
                 )
-                item.kind == FileKind.LINK -> TileIconLabel(Icons.Filled.Link, item.name)
+                item.isNote && note != null -> NoteText(note!!)
+                item.isNote -> TileIconLabel(Icons.AutoMirrored.Filled.Notes, caption)
+                item.isLink -> TileIconLabel(Icons.Filled.Link, caption)
                 else -> TileIconLabel(Icons.Filled.InsertDriveFile, item.name)
             }
 
-            if (item.kind == FileKind.IMAGE) {
-                Text(
-                    text = item.name,
-                    modifier = Modifier
+            if (bitmap != null) {
+                Column(
+                    Modifier
                         .align(Alignment.BottomStart)
                         .fillMaxWidth()
-                        .background(Color.Black.copy(alpha = 0.45f))
+                        .background(Color.Black.copy(alpha = 0.5f))
                         .padding(horizontal = 6.dp, vertical = 4.dp),
-                    color = Color.White,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    style = MaterialTheme.typography.labelSmall,
-                )
+                ) {
+                    Text(
+                        text = caption,
+                        color = Color.White,
+                        maxLines = if (item.isLink) 2 else 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                    link?.site?.takeIf { it.isNotEmpty() }?.let {
+                        Text(it, color = Color.White.copy(alpha = 0.75f), maxLines = 1, style = MaterialTheme.typography.labelSmall)
+                    }
+                }
             }
 
             Surface(
@@ -141,6 +169,23 @@ fun FileTile(
                 TextButton(onClick = { renaming = false }) { Text("Cancel") }
             },
         )
+    }
+}
+
+@Composable
+private fun NoteText(note: Note) {
+    Column(Modifier.fillMaxSize().padding(10.dp)) {
+        Text(
+            note.displayTitle,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
+        )
+        Spacer(Modifier.height(4.dp))
+        val preview = note.body.lines().filter { com.makeavoy.mapaki.data.notes.imageRef(it) == null }
+            .dropWhile { it.isBlank() || it.trim() == note.displayTitle }
+            .joinToString("\n")
+        Text(preview, maxLines = 6, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
     }
 }
 

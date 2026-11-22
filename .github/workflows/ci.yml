@@ -23,4 +23,4 @@ jobs:
           distribution: temurin
           java-version: "21"
       - working-directory: app
-        run: chmod +x gradlew && ./gradlew :app:assembleDebug --console=plain
+        run: chmod +x gradlew && ./gradlew :app:testDebugUnitTest :app:assembleDebug --console=plain

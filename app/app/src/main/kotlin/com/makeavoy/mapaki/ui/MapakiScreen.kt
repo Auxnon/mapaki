@@ -12,6 +12,8 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -46,10 +48,13 @@ fun MapakiScreen(
     thumbnailProvider: suspend (FileItem) -> ByteArray?,
     onReorder: (List<String>) -> Unit,
     onImport: () -> Unit,
+    onNewNote: () -> Unit,
+    onOpen: (FileItem) -> Unit,
     onExport: (FileItem) -> Unit,
     onRename: (FileItem, String) -> Unit,
     onDelete: (FileItem) -> Unit,
 ) {
+    var addMenu by remember { mutableStateOf(false) }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -61,8 +66,20 @@ fun MapakiScreen(
                             strokeWidth = 2.dp,
                         )
                     }
-                    IconButton(onClick = onImport) {
-                        Icon(Icons.Filled.Add, contentDescription = "Import")
+                    Box {
+                        IconButton(onClick = { addMenu = true }) {
+                            Icon(Icons.Filled.Add, contentDescription = "Add")
+                        }
+                        DropdownMenu(expanded = addMenu, onDismissRequest = { addMenu = false }) {
+                            DropdownMenuItem(text = { Text("New note") }, onClick = {
+                                addMenu = false
+                                onNewNote()
+                            })
+                            DropdownMenuItem(text = { Text("Import files") }, onClick = {
+                                addMenu = false
+                                onImport()
+                            })
+                        }
                     }
                 },
             )
@@ -71,7 +88,7 @@ fun MapakiScreen(
         if (items.isEmpty()) {
             Box(Modifier.padding(padding).fillMaxSize()) {
                 Text(
-                    "Nothing here yet — share a link or image to Mapaki, or tap + to import.",
+                    "Nothing here yet — share a link, text or image to Mapaki, or tap + to write a note or import files.",
                     modifier = Modifier.padding(32.dp),
                     style = MaterialTheme.typography.bodyMedium,
                 )
@@ -82,6 +99,7 @@ fun MapakiScreen(
                 modifier = Modifier.padding(padding).fillMaxSize(),
                 thumbnailProvider = thumbnailProvider,
                 onReorder = onReorder,
+                onOpen = onOpen,
                 onExport = onExport,
                 onRename = onRename,
                 onDelete = onDelete,
@@ -96,6 +114,7 @@ private fun ReorderableFileGrid(
     modifier: Modifier,
     thumbnailProvider: suspend (FileItem) -> ByteArray?,
     onReorder: (List<String>) -> Unit,
+    onOpen: (FileItem) -> Unit,
     onExport: (FileItem) -> Unit,
     onRename: (FileItem, String) -> Unit,
     onDelete: (FileItem) -> Unit,
@@ -124,6 +143,7 @@ private fun ReorderableFileGrid(
             FileTile(
                 item = item,
                 thumbnailProvider = thumbnailProvider,
+                onOpen = { onOpen(item) },
                 onExport = { onExport(item) },
                 onRename = { newName -> onRename(item, newName) },
                 onDelete = { onDelete(item) },
