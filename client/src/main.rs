@@ -1,5 +1,7 @@
 mod api;
 mod config;
+mod note;
+mod notes_tui;
 mod sync;
 mod watch;
 
@@ -24,6 +26,7 @@ USAGE:
                               upload files straight to the server (also: `mapaki <file>...`);
                               a name already taken there gets a new name, like `notes-2.txt`.
                               -i asks first: overwrite (as a new revision), rename, or cancel
+    mapaki notes              browse, search and edit notes (.note files) in a terminal UI
     mapaki status             show servers, folder and pending conflicts
     mapaki conflicts          list conflicts waiting on you
     mapaki resolve <file> local|remote|both
@@ -50,6 +53,7 @@ fn main() -> ExitCode {
         Some("url") => cmd_url(&args[1..]),
         Some("folder") => cmd_folder(&args[1..]),
         Some("send") => cmd_send(&args[1..]),
+        Some("notes") => cmd_notes(),
         Some("-i" | "--ask") => cmd_send(&args),
         Some(path) if Path::new(path).is_file() => cmd_send(&args),
         Some("--version" | "-V" | "version") => {
@@ -267,6 +271,13 @@ fn send_one(
     Ok(msg)
 }
 
+fn cmd_notes() -> Result<(), BoxError> {
+    if !std::io::stdout().is_terminal() {
+        return Err("`mapaki notes` needs a terminal".into());
+    }
+    notes_tui::run(need_config()?)
+}
+
 fn cmd_status() -> Result<(), BoxError> {
     let cfg = need_config()?;
     let state = State::load();
@@ -405,6 +416,12 @@ fn cmd_folder(args: &[String]) -> Result<(), BoxError> {
 
 /// UTC `YYYY-MM-DD HH:MM` without pulling in a date crate.
 fn format_time(unix: i64) -> String {
+    let (date, time) = civil(unix);
+    format!("{date} {}Z", &time[..5])
+}
+
+/// UTC (`YYYY-MM-DD`, `HH:MM:SS`) for a unix time.
+pub fn civil(unix: i64) -> (String, String) {
     let days = unix.div_euclid(86_400);
     let secs = unix.rem_euclid(86_400);
     // Civil-from-days (Howard Hinnant's algorithm).
@@ -417,7 +434,10 @@ fn format_time(unix: i64) -> String {
     let d = doy - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = yoe + era * 400 + if m <= 2 { 1 } else { 0 };
-    format!("{y:04}-{m:02}-{d:02} {:02}:{:02}Z", secs / 3600, (secs % 3600) / 60)
+    (
+        format!("{y:04}-{m:02}-{d:02}"),
+        format!("{:02}:{:02}:{:02}", secs / 3600, (secs % 3600) / 60, secs % 60),
+    )
 }
 
 #[cfg(test)]

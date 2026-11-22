@@ -128,6 +128,9 @@ fn sync_once(cfg: &Config, state: &mut State) -> Result<(), BoxError> {
 }
 
 pub fn run(cfg: Config) -> Result<(), BoxError> {
+    let Some(_lock) = crate::config::take_run_lock()? else {
+        return Err("`mapaki run` is already running".into());
+    };
     std::fs::create_dir_all(&cfg.folder)?;
     let folder = cfg.folder.canonicalize()?;
     println!("mapaki {}: syncing {}", env!("CARGO_PKG_VERSION"), folder.display());

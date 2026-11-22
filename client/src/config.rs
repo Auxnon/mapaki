@@ -62,6 +62,28 @@ pub fn default_folder() -> PathBuf {
     dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join("Mapaki")
 }
 
+fn run_lock_path() -> PathBuf {
+    data_dir().join("run.lock")
+}
+
+/// Held by `mapaki run` for as long as it's running (the OS drops it if the
+/// process dies), so other commands know a background sync is active.
+pub fn take_run_lock() -> io::Result<Option<fs::File>> {
+    fs::create_dir_all(data_dir())?;
+    let file = fs::File::create(run_lock_path())?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(file)),
+        Err(fs::TryLockError::WouldBlock) => Ok(None),
+        Err(fs::TryLockError::Error(e)) => Err(e),
+    }
+}
+
+/// Whether `mapaki run` is active, in which case it syncs folder edits itself.
+pub fn service_running() -> bool {
+    let Ok(file) = fs::OpenOptions::new().write(true).open(run_lock_path()) else { return false };
+    matches!(file.try_lock(), Err(fs::TryLockError::WouldBlock))
+}
+
 fn config_path() -> PathBuf {
     config_dir().join("config.json")
 }
