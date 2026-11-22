@@ -5,6 +5,13 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
 }
 
+// Single source of truth for the release version, shared with the Rust crates
+// (scripts/release.sh bumps it). versionCode is derived so it always increases.
+val mapakiVersion = rootProject.file("../VERSION").readText().trim()
+val mapakiVersionCode = mapakiVersion.split(".").map { it.toInt() }.let { (major, minor, patch) ->
+    major * 10_000 + minor * 100 + patch
+}
+
 android {
     namespace = "com.makeavoy.mapaki"
     compileSdk = 35
@@ -13,13 +20,28 @@ android {
         applicationId = "com.makeavoy.mapaki"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = mapakiVersionCode
+        versionName = mapakiVersion
+    }
+
+    // CI signs releases from secrets (see .github/workflows/release.yml). Without
+    // them the release build falls back to the debug key so it's still installable.
+    val releaseKeystore = System.getenv("MAPAKI_KEYSTORE_PATH")?.let { file(it) }?.takeIf { it.exists() }
+    signingConfigs {
+        if (releaseKeystore != null) {
+            create("release") {
+                storeFile = releaseKeystore
+                storePassword = System.getenv("MAPAKI_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("MAPAKI_KEY_ALIAS")
+                keyPassword = System.getenv("MAPAKI_KEY_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
     }
 
@@ -55,4 +77,5 @@ dependencies {
     implementation(libs.okhttp)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.work.runtime.ktx)
 }

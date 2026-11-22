@@ -58,10 +58,10 @@ fun FileTile(
     var menuExpanded by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf(false) }
     var renameText by remember(item.name) { mutableStateOf(item.name) }
-    var bitmap by remember(item.id) { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
+    var bitmap by remember(item.id, item.hash) { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
 
     if (item.kind == FileKind.IMAGE) {
-        LaunchedEffect(item.id) {
+        LaunchedEffect(item.id, item.hash) {
             val bytes = thumbnailProvider(item)
             if (bytes != null) {
                 val decoded = runCatching { BitmapFactory.decodeByteArray(bytes, 0, bytes.size) }.getOrNull()

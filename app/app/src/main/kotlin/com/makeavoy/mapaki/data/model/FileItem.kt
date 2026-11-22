@@ -18,4 +18,9 @@ data class FileItem(
     val size: Long,
     @SerialName("added_at") val addedAt: Long,
     val position: Long,
+    /** Server revision id of the current content. */
+    val head: String = "",
+    /** sha256 of the current content; a changed hash means re-download. */
+    val hash: String = "",
+    val deleted: Boolean = false,
 )

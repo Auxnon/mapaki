@@ -4,11 +4,15 @@ import android.Manifest
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -48,6 +52,17 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        // Every app open is a fresh check and sync, then live updates while visible.
+        viewModel.onForeground()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        viewModel.onBackground()
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
@@ -65,6 +80,10 @@ private fun AppRoot(
     val scope = rememberCoroutineScope()
     val items by viewModel.items.collectAsState()
 
+    LaunchedEffect(Unit) {
+        viewModel.toasts.collect { Toast.makeText(context, it, Toast.LENGTH_SHORT).show() }
+    }
+
     // The SSID is location data on every Android version, so this permission is what makes
     // network-mode detection work at all. Bump a tick on the result so the pairing screen's
     // "Connecting to: ..." line (a plain getter, not Compose State) re-reads once it's granted,
@@ -81,14 +100,12 @@ private fun AppRoot(
         val intent = incomingIntent ?: return@LaunchedEffect
         when (intent.action) {
             Intent.ACTION_SEND -> {
-                if (intent.type == "text/plain") {
-                    intent.getStringExtra(Intent.EXTRA_TEXT)?.let { text ->
-                        viewModel.addFile("link-${System.currentTimeMillis()}.link", text.toByteArray(), "text/plain")
-                    }
-                } else {
-                    @Suppress("DEPRECATION")
-                    val uri = intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
-                    uri?.let { importUri(context, viewModel, it) }
+                @Suppress("DEPRECATION")
+                val uri = intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
+                val text = intent.getStringExtra(Intent.EXTRA_TEXT)
+                when {
+                    uri != null -> importUri(context, viewModel, uri)
+                    text != null -> viewModel.addFile(nameForSharedText(text), text.toByteArray(), "text/plain")
                 }
             }
             Intent.ACTION_SEND_MULTIPLE -> {
@@ -139,7 +156,29 @@ private fun AppRoot(
             onRename = { item, newName -> viewModel.rename(item.id, newName) },
             onDelete = { item -> viewModel.delete(item.id) },
         )
+        viewModel.deleteConflict?.let { conflict ->
+            AlertDialog(
+                onDismissRequest = { viewModel.resolveDeleteConflict(deleteAnyway = false) },
+                title = { Text("Changed on another device") },
+                text = { Text("\"${conflict.item.name}\" was edited elsewhere after you last synced it. Delete the newer version anyway?") },
+                confirmButton = {
+                    TextButton(onClick = { viewModel.resolveDeleteConflict(deleteAnyway = true) }) { Text("Delete anyway") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { viewModel.resolveDeleteConflict(deleteAnyway = false) }) { Text("Keep it") }
+                },
+            )
+        }
     }
+}
+
+/** A shared URL becomes a .link tile; any other shared text becomes a note. */
+private fun nameForSharedText(text: String): String {
+    val stamp = System.currentTimeMillis()
+    val trimmed = text.trim()
+    val isUrl = !trimmed.contains(' ') && !trimmed.contains('\n') &&
+        (trimmed.startsWith("http://") || trimmed.startsWith("https://"))
+    return if (isUrl) "link-$stamp.link" else "note-$stamp.txt"
 }
 
 private fun importUri(context: android.content.Context, viewModel: MapakiViewModel, uri: Uri) {
