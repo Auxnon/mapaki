@@ -31,6 +31,29 @@ data class Note(
                 ?: "(untitled)"
         }
 
+    /** The image a tile shows: the first one the body places, else the first attached. */
+    val cover: EmbeddedImage?
+        get() = body.lineSequence().mapNotNull(::imageRef)
+            .firstNotNullOfOrNull { ref -> images.firstOrNull { it.name == ref } }
+            ?: images.firstOrNull()
+
+    /**
+     * The body as one short paragraph for tiles and lists: image lines
+     * dropped, whitespace collapsed, and cut at a word boundary with "…"
+     * past [maxChars]. Without an explicit title the first line is the
+     * title, so it is left out here. Same rules as `note.rs`.
+     */
+    fun snippet(maxChars: Int = SNIPPET_CHARS): String {
+        var lines = body.lineSequence().filter { imageRef(it) == null }.map { it.trim() }.filter { it.isNotEmpty() }
+        if (title.isBlank()) lines = lines.drop(1)
+        val text = lines.joinToString(" ").split(Regex("\\s+")).joinToString(" ")
+        if (text.codePointCount(0, text.length) <= maxChars) return text
+        var cut = text.offsetByCodePoints(0, maxChars)
+        val space = text.lastIndexOf(' ', cut)
+        if (space > cut / 2) cut = space
+        return text.substring(0, cut).trimEnd() + "…"
+    }
+
     fun toToml(): String = buildString {
         append("title = ").append(basic(title)).append('\n')
         if (created.isNotEmpty()) append("created = ").append(basic(created)).append('\n')
@@ -44,6 +67,8 @@ data class Note(
     fun toBytes(): ByteArray = toToml().toByteArray(Charsets.UTF_8)
 
     companion object {
+        const val SNIPPET_CHARS = 160
+
         fun parse(bytes: ByteArray): Note {
             val text = bytes.toString(Charsets.UTF_8)
             val t = runCatching { Toml.parse(text) }.getOrNull()

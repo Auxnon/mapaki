@@ -168,6 +168,11 @@ A body line that is just `![alt](name)` shows that image there. Images the body
 doesn't place show at the end. The app shrinks large photos to at most 1600 px
 before embedding them.
 
+A note's tile in the app shows its cover image cropped into the top, with the title
+and the start of the text below; the text is cut off past 160 characters. The cover
+is the first image the body places, or the first attached one. `mapaki notes` shows
+the same snippet under each title.
+
 ```toml
 # Some article.link
 url = "https://example.com/article"

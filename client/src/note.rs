@@ -94,6 +94,37 @@ impl Note {
             .unwrap_or_else(|| "(untitled)".into())
     }
 
+    /// The image a preview shows: the first one the body places, else the first attached.
+    #[allow(dead_code)]
+    pub fn cover(&self) -> Option<&Image> {
+        self.body
+            .lines()
+            .filter_map(image_ref)
+            .find_map(|r| self.images.iter().find(|i| i.name == r))
+            .or(self.images.first())
+    }
+
+    /// The body as one short paragraph for lists and tiles: image lines
+    /// dropped, whitespace collapsed, and cut at a word boundary with "…"
+    /// past `max` characters. Without an explicit title the first line is
+    /// the title, so it is left out here. Same rules as the Android app.
+    pub fn snippet(&self, max: usize) -> String {
+        let lines = self.body.lines().filter(|l| image_ref(l).is_none()).map(str::trim).filter(|l| !l.is_empty());
+        let skip = usize::from(self.title.trim().is_empty());
+        let text = lines.skip(skip).flat_map(str::split_whitespace).collect::<Vec<_>>().join(" ");
+        if text.chars().count() <= max {
+            return text;
+        }
+        let mut cut = text.char_indices().nth(max).map_or(text.len(), |(i, _)| i);
+        let space = if text[cut..].starts_with(' ') { Some(cut) } else { text[..cut].rfind(' ') };
+        if let Some(space) = space {
+            if space > cut / 2 {
+                cut = space;
+            }
+        }
+        format!("{}…", text[..cut].trim_end())
+    }
+
     pub fn to_toml(&self) -> String {
         let mut out = String::new();
         out.push_str(&format!("title = {}\n", basic(&self.title)));
@@ -224,6 +255,26 @@ mod tests {
         let n = Note::parse(b"just some text\n");
         assert_eq!(n.body, "just some text\n");
         assert_eq!(n.display_title(), "just some text");
+    }
+
+    #[test]
+    fn snippets() {
+        let n = Note { title: "T".into(), body: "one\n![](a.png)\n\n  two   three \n".into(), ..Note::default() };
+        assert_eq!(n.snippet(100), "one two three");
+        assert_eq!(n.snippet(9), "one two…");
+        assert_eq!(n.snippet(2), "on…");
+        let untitled = Note { body: "Heading\nrest of it".into(), ..Note::default() };
+        assert_eq!(untitled.snippet(100), "rest of it");
+        assert_eq!(Note { title: "T".into(), body: "ééééé".into(), ..Note::default() }.snippet(3), "ééé…");
+    }
+
+    #[test]
+    fn cover_prefers_placed_image() {
+        let img = |n: &str| Image { name: n.into(), mime: "image/png".into(), data: vec![] };
+        let mut n = Note { body: "x\n![](b.png)\n".into(), images: vec![img("a.png"), img("b.png")], ..Note::default() };
+        assert_eq!(n.cover().unwrap().name, "b.png");
+        n.body = "no refs".into();
+        assert_eq!(n.cover().unwrap().name, "a.png");
     }
 
     #[test]

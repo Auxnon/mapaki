@@ -37,6 +37,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
@@ -66,7 +67,7 @@ fun FileTile(
     var menuExpanded by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf(false) }
     var renameText by remember(item.name) { mutableStateOf(item.name) }
-    var bitmap by remember(item.id, item.hash) { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
+    var bitmap by remember(item.id, item.hash) { mutableStateOf<ImageBitmap?>(null) }
     // Notes and links are parsed from the on-device copy for their tile.
     var note by remember(item.id, item.hash) { mutableStateOf<Note?>(null) }
     var link by remember(item.id, item.hash) { mutableStateOf<LinkCard?>(null) }
@@ -76,7 +77,7 @@ fun FileTile(
         val bytes = if (wanted) thumbnailProvider(item) else null
         if (bytes != null) {
             val image = when {
-                item.isNote -> Note.parse(bytes).also { note = it }.images.firstOrNull()?.data
+                item.isNote -> Note.parse(bytes).also { note = it }.cover?.data
                 item.isLink -> LinkCard.parse(bytes).also { link = it }.preview?.data
                 else -> bytes
             }
@@ -93,19 +94,19 @@ fun FileTile(
     Card(onClick = onOpen, modifier = modifier.aspectRatio(1f).fillMaxWidth()) {
         Box(Modifier.fillMaxSize()) {
             when {
+                item.isNote && note != null -> NoteCard(note!!, bitmap)
                 bitmap != null -> Image(
                     bitmap = bitmap!!,
                     contentDescription = item.name,
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop,
                 )
-                item.isNote && note != null -> NoteText(note!!)
                 item.isNote -> TileIconLabel(Icons.AutoMirrored.Filled.Notes, caption)
                 item.isLink -> TileIconLabel(Icons.Filled.Link, caption)
                 else -> TileIconLabel(Icons.Filled.InsertDriveFile, item.name)
             }
 
-            if (bitmap != null) {
+            if (bitmap != null && !item.isNote) {
                 Column(
                     Modifier
                         .align(Alignment.BottomStart)
@@ -172,20 +173,39 @@ fun FileTile(
     }
 }
 
+/**
+ * A note's tile: its cover image clipped into the top, then the title and as
+ * much of the text as fits. Without an image the text gets the whole tile.
+ */
 @Composable
-private fun NoteText(note: Note) {
-    Column(Modifier.fillMaxSize().padding(10.dp)) {
-        Text(
-            note.displayTitle,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
-        )
-        Spacer(Modifier.height(4.dp))
-        val preview = note.body.lines().filter { com.makeavoy.mapaki.data.notes.imageRef(it) == null }
-            .dropWhile { it.isBlank() || it.trim() == note.displayTitle }
-            .joinToString("\n")
-        Text(preview, maxLines = 6, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
+private fun NoteCard(note: Note, cover: ImageBitmap?) {
+    Column(Modifier.fillMaxSize()) {
+        if (cover != null) {
+            Image(
+                bitmap = cover,
+                contentDescription = null,
+                modifier = Modifier.fillMaxWidth().weight(1f),
+                contentScale = ContentScale.Crop,
+            )
+        }
+        Column(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = if (cover != null) 6.dp else 10.dp)) {
+            Text(
+                note.displayTitle,
+                maxLines = if (cover != null) 1 else 2,
+                overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
+            )
+            val snippet = note.snippet()
+            if (snippet.isNotEmpty()) {
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    snippet,
+                    maxLines = if (cover != null) 2 else 6,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
     }
 }
 

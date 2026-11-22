@@ -21,6 +21,9 @@ use crate::config::{self, Config, State};
 use crate::note::{self, Note};
 use crate::sync::{self, BoxError, Syncer};
 
+/// List rows show this much of a note under its title; the terminal width clips the rest.
+const SNIPPET_CHARS: usize = 120;
+
 struct Item {
     file: String,
     note: Note,
@@ -287,7 +290,12 @@ impl App {
                 if !it.note.images.is_empty() {
                     spans.push(Span::raw(format!("  [{}]", it.note.images.len())).dim());
                 }
-                ListItem::new(Line::from(spans))
+                let snippet = it.note.snippet(SNIPPET_CHARS);
+                if snippet.is_empty() {
+                    ListItem::new(Line::from(spans))
+                } else {
+                    ListItem::new(vec![Line::from(spans), Line::from(format!("  {snippet}")).dim()])
+                }
             })
             .collect();
         let title = if self.query.is_empty() {

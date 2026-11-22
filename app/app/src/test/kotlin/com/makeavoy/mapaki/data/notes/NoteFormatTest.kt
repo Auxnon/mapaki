@@ -131,4 +131,22 @@ class NoteFormatTest {
         assertEquals("Desc — here", m["description"])
         assertEquals("Fallback & co", m["title"])
     }
+
+    @Test
+    fun snippets() {
+        val n = Note(title = "T", body = "one\n![](a.png)\n\n  two   three \n")
+        assertEquals("one two three", n.snippet(100))
+        assertEquals("one two…", n.snippet(9))
+        assertEquals("on…", n.snippet(2))
+        assertEquals("rest of it", Note(body = "Heading\nrest of it").snippet(100))
+        assertEquals("ééé…", Note(title = "T", body = "ééééé").snippet(3))
+    }
+
+    @Test
+    fun coverPrefersPlacedImage() {
+        fun img(n: String) = EmbeddedImage(n, "image/png", ByteArray(0))
+        val n = Note(body = "x\n![](b.png)\n", images = listOf(img("a.png"), img("b.png")))
+        assertEquals("b.png", n.cover?.name)
+        assertEquals("a.png", n.copy(body = "no refs").cover?.name)
+    }
 }
