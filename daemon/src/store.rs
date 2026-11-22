@@ -595,15 +595,18 @@ impl Store {
                 (PutResult::Merged, merged, vec![entry.head.clone(), theirs.id])
             };
 
-        let path = self.dir.join(&entry.name);
+        // Restoring a deleted file: its old name may have been taken since.
+        let name = if entry.deleted { unique_name(&self.dir, &entry.name) } else { entry.name.clone() };
+        let path = self.dir.join(&name);
         write_atomic(&path, &final_bytes)?;
         let final_hash = sha256_hex(&final_bytes);
-        let rev = self.record_revision(id, parents_for_head, Some(&final_bytes), &final_hash, &entry.name, device)?;
+        let rev = self.record_revision(id, parents_for_head, Some(&final_bytes), &final_hash, &name, device)?;
         let seq = Self::bump(&mut inner);
         if let Some(stat) = file_stat(&path) {
             inner.stats.insert(id, stat);
         }
         let e = &mut inner.index.entries[idx];
+        e.name = name;
         e.head = rev.id;
         e.hash = final_hash;
         e.size = final_bytes.len() as u64;
@@ -894,6 +897,17 @@ mod tests {
         assert_eq!(list.len(), 1);
         assert!(!list[0].head.is_empty());
         assert_eq!(list[0].hash, sha256_hex(b"old"));
+    }
+
+    #[test]
+    fn force_restoring_a_deleted_file_never_clobbers_its_old_name() {
+        let (store, dir) = temp_store();
+        let a = store.insert_new("a.txt", b"old", "t").unwrap();
+        store.delete(a.id, None, "t").unwrap();
+        store.insert_new("a.txt", b"newcomer", "t").unwrap();
+        let (_, restored) = store.put_content(a.id, b"restored", None, "t", true).unwrap();
+        assert_eq!(restored.name, "a-2.txt");
+        assert_eq!(fs::read(dir.path().join("a.txt")).unwrap(), b"newcomer");
     }
 
     #[test]

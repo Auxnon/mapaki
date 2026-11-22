@@ -6,6 +6,15 @@ name: release
 on:
   push:
     tags: ["v*"]
+  # Manual re-run for an existing tag (Actions tab -> release -> Run workflow).
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to release, e.g. v0.1.0"
+        required: true
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
 
 permissions:
   contents: write
@@ -15,9 +24,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
       - name: Tag matches VERSION
         run: |
-          tag="${GITHUB_REF_NAME#v}"
+          tag="${TAG#v}"
           file="$(cat VERSION)"
           [ "$tag" = "$file" ] || { echo "tag v$tag != VERSION $file"; exit 1; }
 
@@ -29,6 +40,8 @@ jobs:
         target: [x86_64-unknown-linux-musl, aarch64-unknown-linux-musl]
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -62,6 +75,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -99,6 +114,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -107,7 +124,8 @@ jobs:
         run: cd dist && sha256sum * > SHA256SUMS && cat SHA256SUMS
       - uses: softprops/action-gh-release@v2
         with:
-          name: mapaki ${{ github.ref_name }}
+          name: mapaki ${{ env.TAG }}
+          tag_name: ${{ env.TAG }}
           generate_release_notes: true
           files: |
             dist/*
