@@ -2,7 +2,8 @@
 # Install: sudo cp mapaki-daemon.service /etc/systemd/system/
 #          sudo systemctl daemon-reload
 #          sudo systemctl enable --now mapaki-daemon
-# Read the pairing code with: journalctl -u mapaki-daemon -n 20 --no-pager
+# Get a pairing code with: sudo -u CHANGE_ME mapaki-daemon pair-code
+# (install.sh at the repo root writes this unit for you)
 #
 # Adjust User/ExecStart/MAPAKI_DIR below to match the account the binary
 # was uploaded under (see `just daemon-deploy`).
