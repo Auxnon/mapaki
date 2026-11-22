@@ -1,6 +1,7 @@
 # Rust
 /daemon/target
 /daemon/.scratch-mapaki
+/client/target
 
 # Android / Gradle
 /app/local.properties
