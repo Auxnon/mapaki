@@ -5,15 +5,13 @@
 # Android SDK (nothing touches your system) plus generates the Gradle
 # wrapper if it's ever missing; that only happens once.
 #
-# Daemon deploy (manual, out of this justfile's reach — no SSH access from
-# wherever this runs):
-#   1. `just daemon-build` (or cross-compile for beex's arch if it isn't
-#      x86_64/aarch64 Linux — see daemon/README notes in Cargo.toml comments)
-#   2. scp the release binary to beex.local, install
+# Daemon deploy: on the server, run the installer from the README
+# (`curl ... install.sh | sh -s -- daemon`), or by hand:
+#   1. `just daemon-build`, copy the binary over, install
 #      daemon/mapaki-daemon.service (edit the CHANGE_ME user/paths first),
 #      `systemctl enable --now mapaki-daemon`
-#   3. Read the pairing code: `journalctl -u mapaki-daemon -n 20 --no-pager`
-#   4. On matriarch (site-delta host), create `mapaki-upstream.txt` next to
+#   2. Get a pairing code: `mapaki-daemon pair-code` (as the service user)
+#   3. On matriarch (site-delta host), create `mapaki-upstream.txt` next to
 #      the site-delta binary containing beex's LAN IP, e.g. `192.168.1.40:8420`
 #      (must be an IP, not `beex.local` — see daemon/README notes), add the
 #      Cloudflare DNS record for mapaki.makeavoy.com, redeploy site-delta.
@@ -87,3 +85,18 @@ daemon-run:
 # Run the daemon's tests.
 daemon-test:
     cd daemon && cargo test
+
+# Build the desktop sync client (release, native target).
+client-build:
+    cd client && cargo build --release
+
+# Run the desktop client's tests.
+client-test:
+    cd client && cargo test
+
+# All Rust tests.
+test: daemon-test client-test
+
+# Bump every version, commit and tag v<version>; CI publishes the release on push.
+release version:
+    scripts/release.sh {{version}}
