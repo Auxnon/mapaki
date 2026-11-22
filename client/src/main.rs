@@ -4,10 +4,11 @@ mod sync;
 mod watch;
 
 use std::io::{IsTerminal, Write};
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use api::{Api, Entry};
+use api::{Api, Entry, Outcome};
 use config::{Config, State};
 use sync::{BoxError, Choice, Syncer};
 
@@ -19,6 +20,10 @@ USAGE:
                               pair with a server (code from `mapaki-daemon pair-code`)
     mapaki run                stay running: sync on changes either side (what the service runs)
     mapaki sync               sync once now, asking about any conflicts
+    mapaki send [-i] <file>...
+                              upload files straight to the server (also: `mapaki <file>...`);
+                              a name already taken there gets a new name, like `notes-2.txt`.
+                              -i asks first: overwrite (as a new revision), rename, or cancel
     mapaki status             show servers, folder and pending conflicts
     mapaki conflicts          list conflicts waiting on you
     mapaki resolve <file> local|remote|both
@@ -44,6 +49,9 @@ fn main() -> ExitCode {
         Some("restore") => cmd_restore(&args[1..]),
         Some("url") => cmd_url(&args[1..]),
         Some("folder") => cmd_folder(&args[1..]),
+        Some("send") => cmd_send(&args[1..]),
+        Some("-i" | "--ask") => cmd_send(&args),
+        Some(path) if Path::new(path).is_file() => cmd_send(&args),
         Some("--version" | "-V" | "version") => {
             println!("mapaki {}", env!("CARGO_PKG_VERSION"));
             Ok(())
@@ -155,6 +163,108 @@ fn cmd_sync() -> Result<(), BoxError> {
         println!("settle conflicts with `mapaki resolve <file> local|remote|both`");
     }
     Ok(())
+}
+
+enum SendChoice {
+    Overwrite,
+    Rename,
+    Cancel,
+}
+
+fn prompt_send(name: &str) -> SendChoice {
+    println!("\n\"{name}\" is already on the server.");
+    loop {
+        print!("[o]verwrite (the current version stays in history), [r]ename, or [c]ancel? [r] ");
+        let _ = std::io::stdout().flush();
+        let mut line = String::new();
+        match std::io::stdin().read_line(&mut line) {
+            Ok(0) | Err(_) => return SendChoice::Cancel,
+            Ok(_) => {}
+        }
+        match line.trim().to_lowercase().as_str() {
+            "o" | "overwrite" => return SendChoice::Overwrite,
+            "" | "r" | "rename" => return SendChoice::Rename,
+            "c" | "cancel" => return SendChoice::Cancel,
+            _ => {}
+        }
+    }
+}
+
+fn cmd_send(args: &[String]) -> Result<(), BoxError> {
+    let ask = args.iter().any(|a| a == "-i" || a == "--ask");
+    let paths: Vec<&String> = args.iter().filter(|a| *a != "-i" && *a != "--ask").collect();
+    if paths.is_empty() {
+        return Err("usage: mapaki send [-i] <file>...".into());
+    }
+    if ask && !std::io::stdin().is_terminal() {
+        return Err("-i needs a terminal to ask in; leave it off to rename automatically".into());
+    }
+    let cfg = need_config()?;
+    let api = connect(&cfg)?;
+    let mut state = State::load();
+    // Only -i needs to know what's already there; without it the server picks a free name.
+    let mut live: HashMap<String, Entry> = if ask {
+        api.changes(0)?.entries.into_iter().filter(|e| !e.deleted).map(|e| (e.name.clone(), e)).collect()
+    } else {
+        HashMap::new()
+    };
+    let mut failed = 0;
+    for path in paths {
+        match send_one(&api, &cfg, &mut state, &mut live, Path::new(path), ask) {
+            Ok(msg) => println!("{msg}"),
+            Err(e) => {
+                eprintln!("mapaki: {path}: {e}");
+                failed += 1;
+            }
+        }
+    }
+    state.save()?;
+    if failed > 0 {
+        return Err(format!("{failed} file(s) not sent").into());
+    }
+    Ok(())
+}
+
+fn send_one(
+    api: &Api,
+    cfg: &Config,
+    state: &mut State,
+    live: &mut HashMap<String, Entry>,
+    path: &Path,
+    ask: bool,
+) -> Result<String, BoxError> {
+    let name = path.file_name().and_then(|n| n.to_str()).ok_or("not a file name")?;
+    if !sync::is_synced_name(name) {
+        return Err("hidden and temporary files aren't synced".into());
+    }
+    let bytes = std::fs::read(path)?;
+    let (entry, overwrote) = match live.get(name).cloned() {
+        Some(remote) if ask => match prompt_send(name) {
+            SendChoice::Cancel => return Ok(format!("skipped {name}")),
+            SendChoice::Rename => (api.create(name, &bytes)?, false),
+            // Based on the head we just saw, so it's a fast-forward and the
+            // old content stays in `mapaki history`.
+            SendChoice::Overwrite => match api.put(&remote.id, &bytes, Some(&remote.head), false)? {
+                Outcome::Ok((_, e)) => (e, true),
+                Outcome::Conflict(_) => {
+                    return Err("it changed on the server while you were deciding; run it again".into())
+                }
+            },
+        },
+        _ => (api.create(name, &bytes)?, false),
+    };
+    live.insert(entry.name.clone(), entry.clone());
+    let mut msg = if overwrote {
+        format!("sent {name} (new revision; `mapaki history {name}` has the old one)")
+    } else if entry.name != name {
+        format!("sent {name} as {}", entry.name)
+    } else {
+        format!("sent {name}")
+    };
+    if !sync::mirror_sent(&cfg.folder, state, &entry, &bytes)? {
+        msg.push_str(&format!(" (the local {} has unsynced edits; `mapaki sync` will reconcile)", entry.name));
+    }
+    Ok(msg)
 }
 
 fn cmd_status() -> Result<(), BoxError> {

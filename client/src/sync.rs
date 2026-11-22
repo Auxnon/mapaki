@@ -500,3 +500,101 @@ pub fn resolve(api: &Api, folder: &Path, state: &mut State, name: &str, choice: 
     syncer.apply(name, &remote, choice)?;
     Ok(syncer.report)
 }
+
+/// After `mapaki send`: puts the server's copy in the local folder and records
+/// it as synced, so the next pass doesn't download it again. A local file of
+/// the same name with edits sync hasn't seen is left alone; the next sync
+/// reconciles it against the new revision like any other change. Returns
+/// whether the file was mirrored.
+pub fn mirror_sent(folder: &Path, state: &mut State, e: &Entry, bytes: &[u8]) -> io::Result<bool> {
+    let tracked = state.files.get(&e.id);
+    if tracked.is_some_and(|f| f.name != e.name) {
+        // Renamed here since the last sync; writing the server's name would
+        // make the local name look deleted.
+        return Ok(false);
+    }
+    let path = folder.join(&e.name);
+    let hash = sha256_hex(bytes);
+    if path.exists() {
+        let local = sha256_hex(&fs::read(&path)?);
+        let synced_and_untouched = tracked.is_some_and(|f| f.hash == local);
+        if local != hash {
+            if !synced_and_untouched {
+                return Ok(false);
+            }
+            write_atomic(folder, &e.name, bytes)?;
+        }
+    } else {
+        fs::create_dir_all(folder)?;
+        write_atomic(folder, &e.name, bytes)?;
+    }
+    let s = stat(&path).unwrap_or(Stat { size: 0, mtime: 0 });
+    // As in `download`: only trust the head if the bytes are what it holds.
+    let base = if e.hash == hash { e.head.clone() } else { String::new() };
+    state.files.insert(
+        e.id.clone(),
+        FileState { name: e.name.clone(), base, hash, size: s.size, mtime: s.mtime },
+    );
+    state.conflicts.remove(&e.name);
+    Ok(true)
+}
+
+fn write_atomic(folder: &Path, name: &str, bytes: &[u8]) -> io::Result<()> {
+    let tmp = folder.join(format!(".{name}.mapaki-tmp"));
+    fs::write(&tmp, bytes)?;
+    fs::rename(&tmp, folder.join(name))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_folder(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("mapaki-test-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn entry(id: &str, name: &str, bytes: &[u8]) -> Entry {
+        Entry { id: id.into(), name: name.into(), head: format!("rev-{id}"), hash: sha256_hex(bytes), deleted: false }
+    }
+
+    #[test]
+    fn sent_file_is_mirrored_and_tracked() {
+        let dir = temp_folder("mirror-new");
+        let mut state = State::default();
+        let e = entry("a", "notes.txt", b"hello");
+        assert!(mirror_sent(&dir, &mut state, &e, b"hello").unwrap());
+        assert_eq!(fs::read(dir.join("notes.txt")).unwrap(), b"hello");
+        assert_eq!(state.files["a"].base, "rev-a");
+        assert_eq!(state.files["a"].hash, sha256_hex(b"hello"));
+    }
+
+    #[test]
+    fn overwrite_replaces_an_untouched_local_copy() {
+        let dir = temp_folder("mirror-clean");
+        let mut state = State::default();
+        mirror_sent(&dir, &mut state, &entry("a", "notes.txt", b"v1"), b"v1").unwrap();
+        assert!(mirror_sent(&dir, &mut state, &entry("a", "notes.txt", b"v2"), b"v2").unwrap());
+        assert_eq!(fs::read(dir.join("notes.txt")).unwrap(), b"v2");
+        assert_eq!(state.files["a"].hash, sha256_hex(b"v2"));
+    }
+
+    #[test]
+    fn unsynced_local_edits_are_never_clobbered() {
+        let dir = temp_folder("mirror-dirty");
+        let mut state = State::default();
+        mirror_sent(&dir, &mut state, &entry("a", "notes.txt", b"v1"), b"v1").unwrap();
+        fs::write(dir.join("notes.txt"), b"edited here").unwrap();
+        assert!(!mirror_sent(&dir, &mut state, &entry("a", "notes.txt", b"v2"), b"v2").unwrap());
+        assert_eq!(fs::read(dir.join("notes.txt")).unwrap(), b"edited here");
+        // Still based on v1, so the next sync sees both sides changed.
+        assert_eq!(state.files["a"].hash, sha256_hex(b"v1"));
+
+        // An untracked local file that happens to share the name: also left alone.
+        fs::write(dir.join("other.txt"), b"mine").unwrap();
+        assert!(!mirror_sent(&dir, &mut state, &entry("b", "other.txt", b"theirs"), b"theirs").unwrap());
+        assert_eq!(fs::read(dir.join("other.txt")).unwrap(), b"mine");
+    }
+}

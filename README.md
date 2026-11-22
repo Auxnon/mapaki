@@ -41,6 +41,20 @@ mapaki sync                                          # first sync, asks about an
 systemctl --user enable --now mapaki                 # keep it running in the background
 ```
 
+To send files without keeping a folder in sync (handy over ssh or in scripts):
+
+```sh
+mapaki example.txt photo.jpg      # same as `mapaki send example.txt photo.jpg`
+mapaki send -i example.txt        # ask first if the name is taken
+```
+
+A name that's already on the server gets a free one (`example-2.txt`), so nothing is
+ever overwritten. With `-i` you choose: **overwrite** (saved as a new revision, so the
+old content is still in `mapaki history`), **rename**, or **cancel**. Pressing Enter
+renames. Sent files are also copied into your local folder. A local copy with edits
+that haven't synced yet is left alone, and the next `mapaki sync` sorts it out like
+any other conflict.
+
 If the server is reachable at more than one address (say, LAN first and a public
 hostname as fallback), add the others. They are tried in order:
 
@@ -58,7 +72,9 @@ enter a pairing code.
 
 Share links, text, images or any other file to **Mapaki**. A toast confirms it
 synced. If the server isn't reachable, the share is saved on the phone and uploaded
-on the next sync.
+on the next sync (when you open the app, share again, or the background check runs).
+A share always arrives as a new file. If its name is taken by then, it gets a free
+one, so a share that waited offline never overwrites anything.
 
 Both installer commands take `--version vX.Y.Z` to install a specific release, and
 `--no-service` to install only the binary.
