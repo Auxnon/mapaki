@@ -71,6 +71,9 @@ private fun AppRoot(viewModel: MapakiViewModel) {
         viewModel.toasts.collect { Toast.makeText(context, it, Toast.LENGTH_SHORT).show() }
     }
     LaunchedEffect(Unit) {
+        viewModel.openFiles.collect { file -> openWithApp(context, file) }
+    }
+    LaunchedEffect(Unit) {
         viewModel.openUrls.collect { url ->
             runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
                 .onFailure { Toast.makeText(context, "No app can open $url", Toast.LENGTH_SHORT).show() }
@@ -185,4 +188,22 @@ private fun importUri(context: android.content.Context, viewModel: MapakiViewMod
     val mime = mimeTypeFor(context, uri)
     val name = displayNameFor(context, uri, fallback = "file-${System.currentTimeMillis()}")
     viewModel.addFile(name, bytes, mime)
+}
+
+/**
+ * Hands a file to whichever app handles its type: the package installer for
+ * an .apk, a PDF reader, the gallery... Android asks once before mapaki may
+ * start an install.
+ */
+private fun openWithApp(context: android.content.Context, file: java.io.File) {
+    val ext = file.extension.lowercase()
+    val mime = android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext)
+        ?: if (ext == "apk") "application/vnd.android.package-archive" else "application/octet-stream"
+    val uri = androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.files", file)
+    val view = Intent(Intent.ACTION_VIEW).setDataAndType(uri, mime).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    try {
+        context.startActivity(view)
+    } catch (_: android.content.ActivityNotFoundException) {
+        Toast.makeText(context, "No app here opens .$ext files — use Export to save it instead", Toast.LENGTH_LONG).show()
+    }
 }

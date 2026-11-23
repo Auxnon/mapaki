@@ -23,14 +23,19 @@ curl -fsSL https://raw.githubusercontent.com/Auxnon/mapaki/main/install.sh | sh 
 This installs `/usr/local/bin/mapaki-daemon` and a systemd service. The service runs
 as you, stores files in `~/mapaki`, listens on port 8420 and starts on boot. At the
 end the installer prints a **pairing code** for your first device. Each code is valid
-for 10 minutes and works once. To get one for each additional device:
+for 10 minutes and works once. On the server:
 
 ```sh
-MAPAKI_DIR=~/mapaki mapaki-daemon pair-code
+mapaki-daemon pair-code          # a code for another device, plus the address to enter
+mapaki-daemon status             # running? at what address? which files?
+mapaki-daemon devices            # paired devices and when each was last seen
+mapaki-daemon revoke 2           # unpair device #2 (or by name); its access stops at once
 ```
 
 You can also drop files straight into `~/mapaki` on the server, or edit them there.
-The daemon picks up changes within 30 seconds and records them as revisions.
+The daemon notices right away and records them as revisions. A file that's still
+being copied in is left alone until it has stopped changing for 2 seconds, so a
+half-written copy never reaches your devices.
 
 ### Linux desktop client
 
@@ -54,6 +59,12 @@ old content is still in `mapaki history`), **rename**, or **cancel**. Pressing E
 renames. Sent files are also copied into your local folder. A local copy with edits
 that haven't synced yet is left alone, and the next `mapaki sync` sorts it out like
 any other conflict.
+
+See what's on the server and whether each file is in sync on this computer:
+
+```sh
+mapaki ls
+```
 
 Browse, search and edit your notes in the terminal:
 
@@ -84,7 +95,10 @@ enter a pairing code.
 Share links, text, images or any other file to **Mapaki**. A shared URL is saved as
 a `.link` with the page's title and a small preview image. Shared text becomes a
 `.note`. Tap **+** to write a note (with photos) or import files. Tap a note to read
-it, then the pencil to edit it. Tap a link to open it in your browser.
+it, then the pencil to edit it. Tap a link to open it in your browser. Tap anything
+else to open it in the app for its type: an `.apk` opens the installer (Android asks
+once to allow installs from mapaki), a PDF your PDF reader, and so on. **Export** in a
+tile's menu still saves a copy elsewhere.
 
 Sharing doesn't open the app. A card slides up over the app you shared from, showing
 the link's title and preview (or the image, or the start of the note) and whether it
@@ -219,13 +233,19 @@ x86_64/aarch64 Linux binaries of the daemon and client plus the Android APK, and
 publishes them to a GitHub release with `SHA256SUMS`. The installer verifies
 downloads against that file.
 
-To give the APK a stable signature, so updates install over the previous version,
-add these repository secrets:
-- `ANDROID_KEYSTORE_BASE64`: your keystore, base64-encoded.
-- `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`.
+Every APK should be signed with the same key, so each one installs over the last
+(debug builds over releases too) without uninstalling:
 
-Without them, each release is signed with a throwaway key, so you'd have to uninstall
-the app before installing a new version.
+```sh
+scripts/android-signing.sh init      # once: creates the key in ~/.config/mapaki; local builds use it
+gh auth login
+scripts/android-signing.sh upload    # stores it as repository secrets, so CI releases use it too
+```
+
+Back up `~/.config/mapaki/android-release.jks` and `android-signing.properties`. If
+the key is lost, the next APK can't update the installed app. Without the secrets, CI
+signs each release with a throwaway key, so you'd have to uninstall the app (losing
+anything not yet synced) and pair again before installing a new version.
 
 ## API
 

@@ -42,7 +42,10 @@ class MirrorStore(context: Context) {
 
     fun hashOf(id: String): String? = hashes[id]?.takeIf { File(dir, id).exists() }
 
-    fun read(id: String): ByteArray? = File(dir, id).takeIf { it.exists() }?.readBytes()
+    fun read(id: String): ByteArray? = file(id)?.readBytes()
+
+    /** The on-device copy itself, for streaming instead of reading it whole. */
+    fun file(id: String): File? = File(dir, id).takeIf { it.exists() }
 
     @Synchronized
     fun write(id: String, hash: String, bytes: ByteArray) {

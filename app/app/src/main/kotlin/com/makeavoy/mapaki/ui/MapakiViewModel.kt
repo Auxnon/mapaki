@@ -61,6 +61,10 @@ class MapakiViewModel(app: Application) : AndroidViewModel(app) {
     var noteConflict by mutableStateOf<NoteConflict?>(null)
         private set
 
+    private val _openFiles = MutableSharedFlow<java.io.File>(extraBufferCapacity = 1)
+    /** Files to hand to another app to open (MainActivity starts the viewer). */
+    val openFiles: SharedFlow<java.io.File> = _openFiles
+
     private val _openUrls = MutableSharedFlow<String>(extraBufferCapacity = 1)
     /** Links the user tapped, for the activity to hand to a browser. */
     val openUrls: SharedFlow<String> = _openUrls
@@ -149,13 +153,15 @@ class MapakiViewModel(app: Application) : AndroidViewModel(app) {
         refreshNow()
     }
 
-    /** Tap on a tile: notes open in the viewer, links in the browser. */
+    /** Tap on a tile: notes open in the viewer, links in the browser, anything else in the app for its type. */
     fun open(item: FileItem) {
         viewModelScope.launch {
             when {
                 item.isNote -> repo.openNote(item.id)?.let { page = Page.Viewing(it) }
                     ?: _toasts.tryEmit("Couldn't open ${item.name} — not on this device yet")
                 item.isLink -> repo.linkUrl(item.id)?.takeIf { it.isNotBlank() }?.let { _openUrls.tryEmit(it) }
+                else -> repo.openableFile(item)?.let { _openFiles.tryEmit(it) }
+                    ?: _toasts.tryEmit("Couldn't open ${item.name} — not on this device yet")
             }
         }
     }

@@ -23,6 +23,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import okhttp3.OkHttpClient
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.io.File
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 
@@ -226,6 +229,25 @@ class Repository(private val context: Context) {
         localIndex.replaceAll(api.setOrder(baseUrl(), token, orderedIds))
     }
 
+    /**
+     * A copy of [item] under its real name in the app's cache, for handing to
+     * another app to open (installers and viewers go by the extension).
+     * Downloads it first if it isn't on the device yet. Null if that fails.
+     */
+    suspend fun openableFile(item: FileItem): File? = withContext(Dispatchers.IO) {
+        if (mirror.file(item.id) == null) contentBytes(item.id) ?: return@withContext null
+        val source = mirror.file(item.id) ?: return@withContext null
+        val root = File(context.cacheDir, OPEN_DIR)
+        // Earlier hand-offs: the app they went to has had plenty of time to read them.
+        val stale = System.currentTimeMillis() - 60 * 60_000L
+        root.listFiles()?.filter { it.lastModified() < stale }?.forEach { it.deleteRecursively() }
+        val name = item.name.replace('/', '_').ifBlank { item.id }
+        val target = File(File(root, item.id), name)
+        target.parentFile?.mkdirs()
+        source.copyTo(target, overwrite = true)
+        target
+    }
+
     /** Bytes for previewing/exporting an item, from the on-device mirror first. */
     suspend fun contentBytes(id: String): ByteArray? {
         mirror.read(id)?.let { return it }
@@ -250,6 +272,9 @@ class Repository(private val context: Context) {
 
     companion object {
         private const val NOTE_MIME = "application/toml"
+
+        /** Cache subfolder shared through the FileProvider (res/xml/file_paths.xml). */
+        const val OPEN_DIR = "open"
 
         /** Activity and background worker each build a Repository; never sync twice at once. */
         private val syncLock = Mutex()

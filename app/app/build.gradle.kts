@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -12,6 +14,12 @@ val mapakiVersionCode = mapakiVersion.split(".").map { it.toInt() }.let { (major
     major * 10_000 + minor * 100 + patch
 }
 
+val localSigning = Properties().apply {
+    val f = File(System.getProperty("user.home"), ".config/mapaki/android-signing.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}
+fun signing(env: String, prop: String): String? = System.getenv(env) ?: localSigning.getProperty(prop)
+
 android {
     namespace = "com.makeavoy.mapaki"
     compileSdk = 35
@@ -24,24 +32,32 @@ android {
         versionName = mapakiVersion
     }
 
-    // CI signs releases from secrets (see .github/workflows/release.yml). Without
-    // them the release build falls back to the debug key so it's still installable.
-    val releaseKeystore = System.getenv("MAPAKI_KEYSTORE_PATH")?.let { file(it) }?.takeIf { it.exists() }
+    // One signing key for every build, so any APK installs over any other
+    // (debug over release included) without uninstalling. CI reads it from
+    // secrets (see .github/workflows/release.yml); locally it comes from
+    // ~/.config/mapaki/android-signing.properties, which
+    // `scripts/android-signing.sh init` creates. With neither, builds fall
+    // back to the throwaway debug key.
+    val keystore = signing("MAPAKI_KEYSTORE_PATH", "storeFile")?.let { file(it) }?.takeIf { it.exists() }
     signingConfigs {
-        if (releaseKeystore != null) {
-            create("release") {
-                storeFile = releaseKeystore
-                storePassword = System.getenv("MAPAKI_KEYSTORE_PASSWORD")
-                keyAlias = System.getenv("MAPAKI_KEY_ALIAS")
-                keyPassword = System.getenv("MAPAKI_KEY_PASSWORD")
+        if (keystore != null) {
+            create("mapaki") {
+                storeFile = keystore
+                storePassword = signing("MAPAKI_KEYSTORE_PASSWORD", "storePassword")
+                keyAlias = signing("MAPAKI_KEY_ALIAS", "keyAlias")
+                keyPassword = signing("MAPAKI_KEY_PASSWORD", "keyPassword")
             }
         }
     }
 
     buildTypes {
+        val mapaki = signingConfigs.findByName("mapaki")
+        debug {
+            if (mapaki != null) signingConfig = mapaki
+        }
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
+            signingConfig = mapaki ?: signingConfigs.getByName("debug")
         }
     }
 
