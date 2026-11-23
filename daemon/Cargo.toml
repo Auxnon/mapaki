@@ -21,6 +21,7 @@ data-encoding = "2"
 diffy = "0.4"
 tokio-stream = { version = "0.1", features = ["sync"] }
 futures-util = "0.3"
+notify = "6"
 
 [dev-dependencies]
 tempdir = "0.3"

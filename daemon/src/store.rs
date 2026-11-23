@@ -32,6 +32,19 @@ const KEEP_REVISION_CONTENT: usize = 20;
 /// Device label for changes noticed directly in the server's folder.
 pub const SERVER_DEVICE: &str = "server";
 
+/// A file changed by hand more recently than this is left for the next
+/// rescan, so a copy still in progress isn't recorded half-written.
+pub const SETTLE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// What a rescan of the folder found.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Rescan {
+    /// Something was recorded as a new revision, file, or delete.
+    pub changed: bool,
+    /// Some files were still being written and were skipped; rescan again after [`SETTLE`].
+    pub unsettled: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
@@ -274,6 +287,19 @@ impl Store {
         Ok(store)
     }
 
+    /// Live entries in display order, read straight from the index without
+    /// loading (or rescanning) the store; safe while the daemon is running.
+    pub fn read_entries(dir: &Path) -> Vec<Entry> {
+        let mut entries = match fs::read(dir.join(".mapaki-index.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()) {
+            Some(IndexFile::Current(index)) => index.entries,
+            Some(IndexFile::Legacy(entries)) => entries,
+            None => vec![],
+        };
+        entries.retain(|e| !e.deleted);
+        entries.sort_by_key(|e| e.position);
+        entries
+    }
+
     pub fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
         self.seq_tx.subscribe()
     }
@@ -394,9 +420,14 @@ impl Store {
     /// Reconciles the index with the working folder: adopts files dropped in
     /// by hand, records hand edits as new revisions, and tombstones files that
     /// vanished. `full` re-hashes everything instead of trusting size+mtime.
-    pub fn rescan(&self, full: bool) -> io::Result<bool> {
+    pub fn rescan(&self, full: bool) -> io::Result<Rescan> {
         let mut inner = self.inner.lock().unwrap();
         let mut changed = false;
+        let mut unsettled = false;
+        let settled_before = SystemTime::now()
+            .checked_sub(SETTLE)
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map_or(0, |d| d.as_nanos());
 
         for i in 0..inner.index.entries.len() {
             let entry = inner.index.entries[i].clone();
@@ -416,6 +447,10 @@ impl Store {
                 continue;
             };
             if !full && inner.stats.get(&entry.id) == Some(&stat) && !entry.head.is_empty() {
+                continue;
+            }
+            if !full && stat.1 > settled_before {
+                unsettled = true;
                 continue;
             }
             let bytes = fs::read(&path)?;
@@ -452,6 +487,10 @@ impl Store {
         found.sort();
         for name in found {
             let path = self.dir.join(&name);
+            if !full && file_stat(&path).is_some_and(|(_, mtime)| mtime > settled_before) {
+                unsettled = true;
+                continue;
+            }
             let bytes = fs::read(&path)?;
             let hash = sha256_hex(&bytes);
             let id = Uuid::new_v4();
@@ -480,7 +519,7 @@ impl Store {
         if changed {
             self.publish(&inner);
         }
-        Ok(changed)
+        Ok(Rescan { changed, unsettled })
     }
 
     /// Live (non-deleted) entries in display order.
@@ -874,13 +913,39 @@ mod tests {
     fn hand_edits_and_drops_in_the_folder_are_picked_up() {
         let (store, dir) = temp_store();
         let a = store.insert_new("a.txt", b"one", "t").unwrap();
-        fs::write(dir.path().join("a.txt"), b"edited by hand, longer").unwrap();
-        fs::write(dir.path().join("dropped.txt"), b"new").unwrap();
-        assert!(store.rescan(false).unwrap());
+        write_settled(&dir.path().join("a.txt"), b"edited by hand, longer");
+        write_settled(&dir.path().join("dropped.txt"), b"new");
+        assert!(store.rescan(false).unwrap().changed);
         let e = store.get(a.id).unwrap();
         assert_ne!(e.head, a.head);
         assert_eq!(store.history(a.id).last().unwrap().device, SERVER_DEVICE);
         assert!(store.list().iter().any(|e| e.name == "dropped.txt"));
+    }
+
+    /// Writes a file and backdates it past [`SETTLE`], like a copy that finished a while ago.
+    fn write_settled(path: &Path, bytes: &[u8]) {
+        fs::write(path, bytes).unwrap();
+        let past = SystemTime::now() - SETTLE * 2;
+        fs::File::options().write(true).open(path).unwrap().set_modified(past).unwrap();
+    }
+
+    #[test]
+    fn files_still_being_written_wait_for_the_next_rescan() {
+        let (store, dir) = temp_store();
+        let a = store.insert_new("a.txt", b"one", "t").unwrap();
+        fs::write(dir.path().join("a.txt"), b"half of it").unwrap();
+        fs::write(dir.path().join("copying.bin"), b"partial").unwrap();
+        let r = store.rescan(false).unwrap();
+        assert!(!r.changed && r.unsettled);
+        assert_eq!(store.get(a.id).unwrap().head, a.head);
+        assert!(!store.list().iter().any(|e| e.name == "copying.bin"));
+
+        write_settled(&dir.path().join("a.txt"), b"all of it");
+        write_settled(&dir.path().join("copying.bin"), b"complete");
+        let r = store.rescan(false).unwrap();
+        assert!(r.changed && !r.unsettled);
+        assert_ne!(store.get(a.id).unwrap().head, a.head);
+        assert!(store.list().iter().any(|e| e.name == "copying.bin"));
     }
 
     #[test]

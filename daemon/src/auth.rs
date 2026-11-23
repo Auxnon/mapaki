@@ -10,6 +10,8 @@ use subtle::ConstantTimeEq;
 
 const OTP_TTL_SECS: u64 = 10 * 60;
 const MAX_OTP_ATTEMPTS: u8 = 5;
+/// `last_seen` is only written to disk when it moves by at least this much.
+const LAST_SEEN_RESOLUTION_SECS: i64 = 10 * 60;
 
 fn now() -> i64 {
     SystemTime::now()
@@ -50,6 +52,40 @@ struct TokenRecord {
     /// Label recorded on revisions this device makes.
     #[serde(default)]
     device: String,
+    /// Last request with this token, to within [`LAST_SEEN_RESOLUTION_SECS`]; 0 if unknown.
+    #[serde(default)]
+    last_seen: i64,
+}
+
+/// A paired device, for `mapaki-daemon devices`.
+pub struct Device {
+    pub label: String,
+    pub paired_at: i64,
+    pub last_seen: i64,
+}
+
+/// Enough to tell that a file was replaced. mtime alone can miss two writes
+/// in one clock tick; every save is a rename, so the inode changes each time.
+#[derive(PartialEq, Eq)]
+struct FileVersion {
+    modified: Option<SystemTime>,
+    len: u64,
+    inode: u64,
+}
+
+impl FileVersion {
+    fn of(path: &std::path::Path) -> Option<FileVersion> {
+        let meta = fs::metadata(path).ok()?;
+        #[cfg(unix)]
+        let inode = std::os::unix::fs::MetadataExt::ino(&meta);
+        #[cfg(not(unix))]
+        let inode = 0;
+        Some(FileVersion { modified: meta.modified().ok(), len: meta.len(), inode })
+    }
+}
+
+fn read_tokens(path: &std::path::Path) -> Vec<TokenRecord> {
+    fs::read(path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
 }
 
 impl TokenRecord {
@@ -67,32 +103,43 @@ pub struct Auth {
     otp_path: PathBuf,
     pending: std::sync::Mutex<()>,
     tokens: std::sync::Mutex<Vec<TokenRecord>>,
+    /// The tokens file as of our last read or write; a different one means
+    /// another process (`mapaki-daemon revoke`) changed it.
+    tokens_version: std::sync::Mutex<Option<FileVersion>>,
 }
 
 impl Auth {
     pub fn load(tokens_path: PathBuf) -> Self {
-        let tokens: Vec<TokenRecord> = fs::read(&tokens_path)
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default();
         let otp_path = tokens_path.with_file_name(".mapaki-otp.json");
         Auth {
-            tokens_path,
             otp_path,
             pending: std::sync::Mutex::new(()),
-            tokens: std::sync::Mutex::new(tokens),
+            tokens: std::sync::Mutex::new(read_tokens(&tokens_path)),
+            tokens_version: std::sync::Mutex::new(FileVersion::of(&tokens_path)),
+            tokens_path,
         }
     }
 
-    fn save_tokens(&self) {
-        if let Ok(tokens) = self.tokens.lock() {
-            if let Ok(bytes) = serde_json::to_vec_pretty(&*tokens) {
-                let tmp = self.tokens_path.with_extension("tmp");
-                if fs::write(&tmp, bytes).is_ok() {
-                    let _ = fs::rename(&tmp, &self.tokens_path);
-                }
+    /// The token list, re-read first if another process changed the file.
+    fn tokens(&self) -> std::sync::MutexGuard<'_, Vec<TokenRecord>> {
+        let mut tokens = self.tokens.lock().unwrap();
+        let mut seen = self.tokens_version.lock().unwrap();
+        let current = FileVersion::of(&self.tokens_path);
+        if current != *seen {
+            *tokens = read_tokens(&self.tokens_path);
+            *seen = current;
+        }
+        tokens
+    }
+
+    fn save_tokens(&self, tokens: &[TokenRecord]) {
+        if let Ok(bytes) = serde_json::to_vec_pretty(tokens) {
+            let tmp = self.tokens_path.with_extension("tmp");
+            if fs::write(&tmp, bytes).is_ok() {
+                let _ = fs::rename(&tmp, &self.tokens_path);
             }
         }
+        *self.tokens_version.lock().unwrap() = FileVersion::of(&self.tokens_path);
     }
 
     fn write_otp(&self, otp: Option<&PendingOtp>) {
@@ -156,24 +203,58 @@ impl Auth {
             .filter(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | ' ' | '.'))
             .take(40)
             .collect();
-        self.tokens.lock().unwrap().push(TokenRecord {
+        let mut tokens = self.tokens();
+        tokens.push(TokenRecord {
             hash,
             created_at: now(),
             device: device.trim().to_string(),
+            last_seen: now(),
         });
-        self.save_tokens();
+        self.save_tokens(&tokens);
         Ok(token)
     }
 
     /// The device label for a valid token, None if the token is unknown.
     pub fn check_token(&self, presented: &str) -> Option<String> {
         let hash = sha256_hex(presented);
-        self.tokens
-            .lock()
-            .unwrap()
+        let mut tokens = self.tokens();
+        let t = tokens.iter_mut().find(|t| ct_eq(&t.hash, &hash))?;
+        let label = t.label();
+        let stale = now() - t.last_seen >= LAST_SEEN_RESOLUTION_SECS;
+        if stale {
+            t.last_seen = now();
+            self.save_tokens(&tokens);
+        }
+        Some(label)
+    }
+
+    /// Paired devices, oldest first; `revoke` takes a position in this list.
+    pub fn devices(&self) -> Vec<Device> {
+        self.tokens()
             .iter()
-            .find(|t| ct_eq(&t.hash, &hash))
-            .map(|t| t.label())
+            .map(|t| Device { label: t.label(), paired_at: t.created_at, last_seen: t.last_seen })
+            .collect()
+    }
+
+    /// Unpairs a device by its number in [`devices`](Self::devices) (from 1)
+    /// or its name. Its token stops working right away, in a running daemon too.
+    pub fn revoke(&self, which: &str) -> Result<String, String> {
+        let mut tokens = self.tokens();
+        let index = match which.parse::<usize>() {
+            Ok(n) if (1..=tokens.len()).contains(&n) => n - 1,
+            Ok(n) => return Err(format!("no device {n}; there are {}", tokens.len())),
+            Err(_) => {
+                let matches: Vec<usize> = (0..tokens.len()).filter(|&i| tokens[i].label().eq_ignore_ascii_case(which)).collect();
+                match matches[..] {
+                    [i] => i,
+                    [] => return Err(format!("no device called \"{which}\"")),
+                    _ => return Err(format!("{} devices are called \"{which}\"; revoke one by its number", matches.len())),
+                }
+            }
+        };
+        let removed = tokens.remove(index);
+        self.save_tokens(&tokens);
+        Ok(removed.label())
     }
 }
 
@@ -225,6 +306,29 @@ mod tests {
         }
         // Even the correct code no longer works once attempts are exhausted.
         assert!(auth.redeem_pairing(&otp, None).is_err());
+    }
+
+    #[test]
+    fn revoking_from_another_process_takes_effect() {
+        let (auth, dir) = temp_auth();
+        let phone = auth.redeem_pairing(&auth.start_pairing(), Some("phone")).unwrap();
+        let laptop = auth.redeem_pairing(&auth.start_pairing(), Some("laptop")).unwrap();
+        let cli = Auth::load(dir.path().join("tokens.json"));
+        assert_eq!(cli.devices().len(), 2);
+        assert!(cli.revoke("PHONE").is_ok());
+        assert!(auth.check_token(&phone).is_none());
+        assert!(auth.check_token(&laptop).is_some());
+        assert!(cli.revoke("3").is_err());
+    }
+
+    #[test]
+    fn same_named_devices_are_revoked_by_number() {
+        let (auth, _dir) = temp_auth();
+        auth.redeem_pairing(&auth.start_pairing(), Some("phone")).unwrap();
+        let second = auth.redeem_pairing(&auth.start_pairing(), Some("phone")).unwrap();
+        assert!(auth.revoke("phone").is_err());
+        assert_eq!(auth.revoke("1").unwrap(), "phone");
+        assert!(auth.check_token(&second).is_some());
     }
 
     #[test]

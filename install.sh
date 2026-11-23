@@ -119,13 +119,13 @@ EOF
     say "service running as $run_user, storing files in $run_home/mapaki, port 8420"
 
     sleep 1
+    say "your first device:"
     if [ "$(id -un)" = "$run_user" ]; then
-        code="$(MAPAKI_DIR="$run_home/mapaki" /usr/local/bin/mapaki-daemon pair-code 2>/dev/null)"
+        MAPAKI_DIR="$run_home/mapaki" /usr/local/bin/mapaki-daemon pair-code 2>/dev/null
     else
-        code="$(sudo -u "$run_user" env MAPAKI_DIR="$run_home/mapaki" /usr/local/bin/mapaki-daemon pair-code 2>/dev/null)"
+        sudo -u "$run_user" env MAPAKI_DIR="$run_home/mapaki" /usr/local/bin/mapaki-daemon pair-code 2>/dev/null
     fi
-    say "pairing code for your first device (valid 10 min): $code"
-    say "more devices later: MAPAKI_DIR=$run_home/mapaki mapaki-daemon pair-code"
+    say "more devices later: mapaki-daemon pair-code   (status, devices, revoke: mapaki-daemon --help)"
 }
 
 install_client() {
