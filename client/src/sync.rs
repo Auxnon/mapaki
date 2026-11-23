@@ -126,6 +126,78 @@ fn scan(folder: &Path) -> io::Result<HashMap<String, Stat>> {
     Ok(out)
 }
 
+/// How a server file stands on this computer, for `mapaki ls`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Here {
+    Synced,
+    /// Changed here since the last sync; the next sync uploads (or merges) it.
+    Edited,
+    /// Changed on the server since; the next sync downloads it.
+    Behind,
+    Conflict,
+    /// Removed here; the next sync deletes it on the server too.
+    Deleted,
+    /// On the server, not downloaded yet.
+    NotHere,
+    /// Only in this folder; the next sync uploads it.
+    OnlyHere,
+}
+
+impl Here {
+    pub fn label(self) -> &'static str {
+        match self {
+            Here::Synced => "synced",
+            Here::Edited => "edited here",
+            Here::Behind => "newer on server",
+            Here::Conflict => "conflict (mapaki resolve)",
+            Here::Deleted => "deleted here",
+            Here::NotHere => "not downloaded yet",
+            Here::OnlyHere => "only here",
+        }
+    }
+}
+
+pub struct Listed {
+    pub name: String,
+    pub size: u64,
+    pub here: Here,
+}
+
+/// Every server file (in the server's order) plus files only in the folder,
+/// each with how it stands here. Reads, never changes anything.
+pub fn listing(folder: &Path, state: &State, remote: &[Entry]) -> Vec<Listed> {
+    let local = scan(folder).unwrap_or_default();
+    let changed_here = |name: &str, fs: &FileState| match local.get(name) {
+        Some(s) if s.size == fs.size && s.mtime == fs.mtime => false,
+        Some(_) => fs::read(folder.join(name)).map_or(true, |b| sha256_hex(&b) != fs.hash),
+        None => false,
+    };
+    let mut seen = HashSet::new();
+    let mut out = vec![];
+    for e in remote.iter().filter(|e| !e.deleted) {
+        let tracked = state.files.get(&e.id);
+        let name = tracked.map_or(e.name.as_str(), |f| f.name.as_str());
+        seen.insert(name.to_string());
+        let here = match tracked {
+            _ if state.conflicts.contains_key(name) => Here::Conflict,
+            None if !local.contains_key(name) => Here::NotHere,
+            None => match fs::read(folder.join(name)) {
+                Ok(b) if sha256_hex(&b) == e.hash => Here::Synced,
+                _ => Here::Conflict,
+            },
+            Some(_) if !local.contains_key(name) => Here::Deleted,
+            Some(f) if changed_here(name, f) => Here::Edited,
+            Some(f) if f.base != e.head => Here::Behind,
+            Some(_) => Here::Synced,
+        };
+        out.push(Listed { name: name.to_string(), size: e.size, here });
+    }
+    let mut only: Vec<_> = local.iter().filter(|(n, _)| !seen.contains(*n)).collect();
+    only.sort_by(|a, b| a.0.cmp(b.0));
+    out.extend(only.into_iter().map(|(n, s)| Listed { name: n.clone(), size: s.size, here: Here::OnlyHere }));
+    out
+}
+
 /// `notes.txt` -> `notes (conflict copy).txt`, `-2`, `-3`... if taken.
 pub fn conflict_copy_name(folder: &Path, name: &str) -> String {
     let p = Path::new(name);
@@ -557,7 +629,32 @@ mod tests {
     }
 
     fn entry(id: &str, name: &str, bytes: &[u8]) -> Entry {
-        Entry { id: id.into(), name: name.into(), head: format!("rev-{id}"), hash: sha256_hex(bytes), deleted: false }
+        Entry { id: id.into(), name: name.into(), head: format!("rev-{id}"), hash: sha256_hex(bytes), size: bytes.len() as u64, deleted: false }
+    }
+
+    #[test]
+    fn listing_reports_each_files_standing() {
+        let dir = temp_folder("listing");
+        let mut state = State::default();
+        let synced = entry("a", "synced.txt", b"same");
+        let edited = entry("b", "edited.txt", b"before");
+        let mut behind = entry("c", "behind.txt", b"old");
+        mirror_sent(&dir, &mut state, &synced, b"same").unwrap();
+        mirror_sent(&dir, &mut state, &edited, b"before").unwrap();
+        mirror_sent(&dir, &mut state, &behind, b"old").unwrap();
+        behind.head = "rev-c2".into();
+        fs::write(dir.join("edited.txt"), b"after, longer").unwrap();
+        fs::write(dir.join("mine.txt"), b"new here").unwrap();
+        let remote = [synced, edited, behind, entry("d", "remote.txt", b"r")];
+        let got: Vec<(String, Here)> = listing(&dir, &state, &remote).into_iter().map(|l| (l.name, l.here)).collect();
+        let want = [
+            ("synced.txt", Here::Synced),
+            ("edited.txt", Here::Edited),
+            ("behind.txt", Here::Behind),
+            ("remote.txt", Here::NotHere),
+            ("mine.txt", Here::OnlyHere),
+        ];
+        assert_eq!(got, want.map(|(n, h)| (n.to_string(), h)));
     }
 
     #[test]

@@ -27,6 +27,7 @@ USAGE:
                               a name already taken there gets a new name, like `notes-2.txt`.
                               -i asks first: overwrite (as a new revision), rename, or cancel
     mapaki notes              browse, search and edit notes (.note files) in a terminal UI
+    mapaki ls                 list the server's files and whether each is in sync here
     mapaki status             show servers, folder and pending conflicts
     mapaki conflicts          list conflicts waiting on you
     mapaki resolve <file> local|remote|both
@@ -45,6 +46,7 @@ fn main() -> ExitCode {
         Some("pair") => cmd_pair(&args[1..]),
         Some("run") => need_config().and_then(watch::run),
         Some("sync") => cmd_sync(),
+        Some("ls" | "list") => cmd_ls(),
         Some("status") => cmd_status(),
         Some("conflicts") => cmd_conflicts(),
         Some("resolve") => cmd_resolve(&args[1..]),
@@ -290,6 +292,60 @@ fn cmd_status() -> Result<(), BoxError> {
     println!("tracked files: {}", state.files.len());
     println!("conflicts: {}", state.conflicts.len());
     Ok(())
+}
+
+fn cmd_ls() -> Result<(), BoxError> {
+    let cfg = need_config()?;
+    let state = State::load();
+    // Offline, compare against what this computer last synced instead.
+    let (remote, offline) = match connect(&cfg).and_then(|api| Ok(api.changes(0)?)) {
+        Ok(changes) => (changes.entries, false),
+        Err(_) => {
+            let known = state.files.iter().map(|(id, f)| Entry {
+                id: id.clone(),
+                name: f.name.clone(),
+                head: f.base.clone(),
+                hash: f.hash.clone(),
+                size: f.size,
+                deleted: false,
+            });
+            let mut known: Vec<Entry> = known.collect();
+            known.sort_by(|a, b| a.name.cmp(&b.name));
+            (known, true)
+        }
+    };
+    let listed = sync::listing(&cfg.folder, &state, &remote);
+    if offline {
+        println!("server unreachable: showing what this computer last synced\n");
+    }
+    if listed.is_empty() {
+        println!("no files yet");
+        return Ok(());
+    }
+    let width = listed.iter().map(|l| l.name.chars().count()).max().unwrap_or(0).clamp(4, 48);
+    println!("{:<width$}  {:>8}  HERE", "NAME", "SIZE");
+    for l in &listed {
+        let name: String = if l.name.chars().count() > width {
+            l.name.chars().take(width - 1).chain(['…']).collect()
+        } else {
+            l.name.clone()
+        };
+        println!("{name:<width$}  {:>8}  {}", human_size(l.size), l.here.label());
+    }
+    let pending = listed.iter().filter(|l| l.here != sync::Here::Synced).count();
+    if pending > 0 && !config::service_running() {
+        println!("\n{pending} not in sync; `mapaki sync` sorts them out");
+    }
+    Ok(())
+}
+
+pub fn human_size(n: u64) -> String {
+    match n {
+        n if n >= 1 << 30 => format!("{:.1} GB", n as f64 / (1u64 << 30) as f64),
+        n if n >= 1 << 20 => format!("{:.1} MB", n as f64 / (1u64 << 20) as f64),
+        n if n >= 1 << 10 => format!("{} KB", n >> 10),
+        n => format!("{n} B"),
+    }
 }
 
 fn cmd_conflicts() -> Result<(), BoxError> {

@@ -360,18 +360,10 @@ impl App {
 
 fn image_line<'a>(note: &Note, name: &str) -> Line<'a> {
     let label = match note.images.iter().find(|i| i.name == name) {
-        Some(img) => format!("[image: {name} · {}]", human_size(img.data.len())),
+        Some(img) => format!("[image: {name} · {}]", crate::human_size(img.data.len() as u64)),
         None => format!("[missing image: {name}]"),
     };
     Line::from(Span::raw(label).italic().cyan())
-}
-
-fn human_size(n: usize) -> String {
-    match n {
-        n if n >= 1 << 20 => format!("{:.1} MB", n as f64 / (1 << 20) as f64),
-        n if n >= 1 << 10 => format!("{} KB", n >> 10),
-        n => format!("{n} B"),
-    }
 }
 
 fn load_notes(folder: &Path) -> Vec<Item> {

@@ -12,6 +12,8 @@ pub struct Entry {
     #[serde(default)]
     pub hash: String,
     #[serde(default)]
+    pub size: u64,
+    #[serde(default)]
     pub deleted: bool,
 }
 
