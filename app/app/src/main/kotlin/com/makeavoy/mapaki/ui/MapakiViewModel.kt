@@ -140,28 +140,10 @@ class MapakiViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { afterShare(repo.addFile(name, bytes, mimeType)) }
     }
 
-    /**
-     * Shared text: a URL (optionally with a few words around it, as many apps
-     * send "Page title https://...") becomes a `.link`, anything else a `.note`.
-     */
-    fun shareText(text: String, subject: String?) {
-        viewModelScope.launch {
-            val url = URL.find(text)?.value
-            val rest = url?.let { text.replace(it, "").trim() }
-            val result = if (url != null && rest!!.length <= 200 && '\n' !in rest) {
-                repo.addLink(url, subject?.takeIf { it.isNotBlank() } ?: rest.ifEmpty { null })
-            } else {
-                repo.addNote(Note(title = subject.orEmpty().trim(), created = nowRfc3339(), body = text))
-            }
-            afterShare(result)
-        }
-    }
-
     private suspend fun afterShare(result: ShareResult) {
-        when (result) {
-            is ShareResult.Synced -> _toasts.tryEmit("Synced ${result.name}")
-            is ShareResult.Queued -> _toasts.tryEmit("Saved ${result.name} — will sync when the server is reachable")
-        }
+        _toasts.tryEmit(
+            if (result.queued) "Saved ${result.name} — will sync when the server is reachable" else "Synced ${result.name}",
+        )
         // A share is also a fresh check: pull anything other devices did meanwhile.
         SyncScheduler.reset(getApplication())
         refreshNow()
@@ -299,7 +281,6 @@ class MapakiViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun contentBytes(id: String): ByteArray? = repo.contentBytes(id)
 
     companion object {
-        private val URL = Regex("https?://[^\\s<>\"]+")
         private const val MIN_RETRY_MS = 60_000L
         private const val MAX_RETRY_MS = 60 * 60_000L
     }

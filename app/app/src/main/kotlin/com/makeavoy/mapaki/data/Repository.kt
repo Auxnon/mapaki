@@ -29,11 +29,18 @@ import java.util.concurrent.TimeUnit
 /** A note opened for reading or editing, with the revision its content is. */
 data class OpenNote(val item: FileItem, val note: Note, val base: String?)
 
-/** What happened to a share, for the toast. */
-sealed interface ShareResult {
-    data class Synced(val name: String) : ShareResult
-    data class Queued(val name: String) : ShareResult
-}
+/**
+ * What happened to a share, for the share card: [queued] means it's saved on
+ * the phone and goes up on the next sync. [title], [detail] and [image]
+ * describe it (a link's page title, site and preview; a note's snippet).
+ */
+class ShareResult(
+    val name: String,
+    val queued: Boolean,
+    val title: String = name,
+    val detail: String = "",
+    val image: ByteArray? = null,
+)
 
 class Repository(private val context: Context) {
     val authStore = AuthStore(context)
@@ -126,21 +133,25 @@ class Repository(private val context: Context) {
 
     /** Uploads a shared file, or queues it on device if the server isn't reachable. */
     suspend fun addFile(name: String, bytes: ByteArray, mimeType: String): ShareResult {
-        val token = authStore.token ?: return ShareResult.Queued(name).also { pending.add(name, bytes, mimeType) }
+        val image = bytes.takeIf { mimeType.startsWith("image/") }
+        val token = authStore.token
+            ?: return ShareResult(name, queued = true, image = image).also { pending.add(name, bytes, mimeType) }
         return try {
             val entry = api.upload(baseUrl(), token, name, bytes, mimeType)
             localIndex.upsertAtTop(entry)
             mirror.write(entry.id, entry.hash.ifEmpty { sha256(bytes) }, bytes)
-            ShareResult.Synced(entry.name)
+            ShareResult(entry.name, queued = false, image = image)
         } catch (_: Exception) {
             pending.add(name, bytes, mimeType)
-            ShareResult.Queued(name)
+            ShareResult(name, queued = true, image = image)
         }
     }
 
     /** Saves a new note; queued like any share if the server can't be reached. */
-    suspend fun addNote(note: Note): ShareResult =
-        addFile(fileStemFor(note.displayTitle, "note") + ".note", note.toBytes(), NOTE_MIME)
+    suspend fun addNote(note: Note): ShareResult {
+        val r = addFile(fileStemFor(note.displayTitle, "note") + ".note", note.toBytes(), NOTE_MIME)
+        return ShareResult(r.name, r.queued, note.displayTitle, note.snippet(), note.cover?.data)
+    }
 
     /**
      * Saves a shared URL as a `.link`, with the page's title and a small
@@ -149,7 +160,8 @@ class Repository(private val context: Context) {
      */
     suspend fun addLink(url: String, subject: String?): ShareResult {
         val card = linkPreview.card(url, fallbackTitle = subject.orEmpty())
-        return addFile(fileStemFor(card.displayTitle, "link") + ".link", card.toBytes(), NOTE_MIME)
+        val r = addFile(fileStemFor(card.displayTitle, "link") + ".link", card.toBytes(), NOTE_MIME)
+        return ShareResult(r.name, r.queued, card.displayTitle, card.site.ifEmpty { url }, card.preview?.data)
     }
 
     /**

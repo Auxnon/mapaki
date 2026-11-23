@@ -39,19 +39,12 @@ import kotlinx.coroutines.launch
 class MainActivity : ComponentActivity() {
 
     private val viewModel: MapakiViewModel by viewModels()
-    private var pendingIntent by mutableStateOf<Intent?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        pendingIntent = intent
-
         setContent {
             MapakiTheme {
-                AppRoot(
-                    viewModel = viewModel,
-                    incomingIntent = pendingIntent,
-                    onIntentConsumed = { pendingIntent = null },
-                )
+                AppRoot(viewModel = viewModel)
             }
         }
     }
@@ -66,20 +59,10 @@ class MainActivity : ComponentActivity() {
         super.onStop()
         viewModel.onBackground()
     }
-
-    override fun onNewIntent(intent: Intent) {
-        super.onNewIntent(intent)
-        setIntent(intent)
-        pendingIntent = intent
-    }
 }
 
 @Composable
-private fun AppRoot(
-    viewModel: MapakiViewModel,
-    incomingIntent: Intent?,
-    onIntentConsumed: () -> Unit,
-) {
+private fun AppRoot(viewModel: MapakiViewModel) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val items by viewModel.items.collectAsState()
@@ -104,28 +87,6 @@ private fun AppRoot(
     }
     LaunchedEffect(Unit) { permissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION) }
     val targetDescription = remember(permissionTick, viewModel.isPaired) { viewModel.targetDescription }
-
-    // Share-to-app intents (links and images).
-    LaunchedEffect(incomingIntent) {
-        val intent = incomingIntent ?: return@LaunchedEffect
-        when (intent.action) {
-            Intent.ACTION_SEND -> {
-                @Suppress("DEPRECATION")
-                val uri = intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
-                val text = intent.getStringExtra(Intent.EXTRA_TEXT)
-                when {
-                    uri != null -> importUri(context, viewModel, uri)
-                    text != null -> viewModel.shareText(text, intent.getStringExtra(Intent.EXTRA_SUBJECT))
-                }
-            }
-            Intent.ACTION_SEND_MULTIPLE -> {
-                @Suppress("DEPRECATION")
-                val uris = intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)
-                uris?.forEach { importUri(context, viewModel, it) }
-            }
-        }
-        onIntentConsumed()
-    }
 
     val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         uris.forEach { uri -> importUri(context, viewModel, uri) }

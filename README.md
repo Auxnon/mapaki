@@ -84,8 +84,12 @@ enter a pairing code.
 Share links, text, images or any other file to **Mapaki**. A shared URL is saved as
 a `.link` with the page's title and a small preview image. Shared text becomes a
 `.note`. Tap **+** to write a note (with photos) or import files. Tap a note to read
-it, then the pencil to edit it. Tap a link to open it in your browser. A toast
-confirms each share synced. If the server isn't reachable, the share is saved on the phone and uploaded
+it, then the pencil to edit it. Tap a link to open it in your browser.
+
+Sharing doesn't open the app. A card slides up over the app you shared from, showing
+the link's title and preview (or the image, or the start of the note) and whether it
+reached the server, then slides away by itself. Tap it to open mapaki, or tap anywhere
+else to dismiss it. If the server isn't reachable, the share is saved on the phone and uploaded
 on the next sync (when you open the app, share again, or the background check runs).
 A share always arrives as a new file. If its name is taken by then, it gets a free
 one, so a share that waited offline never overwrites anything.
