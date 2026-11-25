@@ -101,7 +101,7 @@ pub struct Revision {
     pub deleted: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PutResult {
     /// Content was identical to the head; nothing recorded.
@@ -229,7 +229,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     fs::rename(&tmp, path)
 }
 
-fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
+pub(crate) fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
     write_atomic(path, &serde_json::to_vec_pretty(value).unwrap())
 }
 

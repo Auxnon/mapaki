@@ -22,6 +22,7 @@ diffy = "0.4"
 tokio-stream = { version = "0.1", features = ["sync"] }
 futures-util = "0.3"
 notify = "6"
+ureq = { version = "2", features = ["json"] }
 
 [dev-dependencies]
 tempdir = "0.3"

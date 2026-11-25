@@ -1,4 +1,5 @@
 mod auth;
+mod peer;
 mod routes;
 mod store;
 
@@ -29,6 +30,11 @@ USAGE:
     mapaki-daemon devices      list paired devices
     mapaki-daemon revoke <number|name>
                                unpair a device; its access stops right away
+    mapaki-daemon peer add <server> <code>
+                               keep this folder in sync with another mapaki server
+                               (code from `mapaki-daemon pair-code` there)
+    mapaki-daemon peer list    linked servers and when each last synced
+    mapaki-daemon peer remove <server>
     mapaki-daemon --version
 
 ENVIRONMENT:
@@ -113,6 +119,9 @@ fn cmd_status(dir: &Path) {
         println!("server:   not running (port {} is free)", port());
     }
     println!("devices:  {devices} paired (mapaki-daemon devices)");
+    for p in peer::read_config(dir) {
+        println!("peer:     {}, {}", p.name, peer_line(dir, &p));
+    }
     println!("files:    {}, {}", entries.len(), human_size(total));
     if entries.is_empty() {
         return;
@@ -133,6 +142,77 @@ fn cmd_status(dir: &Path) {
             .map_or_else(|| "missing".into(), |d| ago(d.as_secs() as i64));
         println!("  {name:<width$}  {:>8}  {changed}", human_size(e.size));
     }
+}
+
+fn this_host() -> String {
+    std::fs::read_to_string("/proc/sys/kernel/hostname")
+        .or_else(|_| std::fs::read_to_string("/etc/hostname"))
+        .map(|h| h.trim().to_string())
+        .ok()
+        .filter(|h| !h.is_empty())
+        .unwrap_or_else(|| "server".into())
+}
+
+fn peer_line(dir: &Path, p: &peer::PeerConfig) -> String {
+    let s = peer::read_state(dir, &p.name);
+    let synced = if s.last_sync > 0 { format!("last synced {}", ago(s.last_sync)) } else { "not synced yet".into() };
+    match (s.since, s.online, &s.problem) {
+        (0, _, _) => format!("waiting for the daemon to connect; {synced}"),
+        (_, true, _) => format!("connected; {synced}"),
+        (since, false, Some(problem)) => format!("{problem} (since {}); {synced}", ago(since)),
+        (since, false, None) => format!("offline since {}; {synced}", ago(since)),
+    }
+}
+
+fn cmd_peer(dir: &Path, args: &[String]) -> Result<(), String> {
+    let mut peers = peer::read_config(dir);
+    match args.first().map(String::as_str) {
+        Some("add") => {
+            let [_, server, code] = args else {
+                return Err("usage: mapaki-daemon peer add <server> <code>   (e.g. lunchbox.local 123456)".into());
+            };
+            let url = peer::normalize_url(server);
+            let name = peer::host_of(&url);
+            let token = peer::pair(&url, code.trim(), &this_host()).map_err(|e| format!("couldn't link with {url}: {e}"))?;
+            let fresh = !peers.iter().any(|p| p.name == name);
+            peers.retain(|p| p.name != name);
+            peers.push(peer::PeerConfig { name: name.clone(), url, token });
+            peer::write_config(dir, &peers).map_err(|e| format!("couldn't save the link: {e}"))?;
+            println!("linked with {name}; files now sync both ways whenever both servers are on.");
+            if fresh {
+                println!("Files with the same name and content on both are matched up. Same name, different");
+                println!("content: both are kept, this server's as \"name (conflict copy)\".");
+                println!("One link is enough: don't also add this server as a peer on {name}.");
+            }
+            if is_serving() {
+                println!("The running daemon starts syncing within a few seconds; see `mapaki-daemon peer list`.");
+            } else {
+                println!("Syncing starts when the daemon does.");
+            }
+        }
+        Some("list") | None => {
+            if peers.is_empty() {
+                println!("not linked with any other server; `mapaki-daemon peer add <server> <code>` links one");
+            }
+            for p in &peers {
+                println!("{}  {}\n    {}", p.name, p.url, peer_line(dir, p));
+            }
+        }
+        Some("remove") => {
+            let Some(name) = args.get(1) else { return Err("usage: mapaki-daemon peer remove <server>".into()) };
+            let before = peers.len();
+            peers.retain(|p| p.name != *name && p.url != *name);
+            if peers.len() == before {
+                return Err(format!("no link with {name}; see `mapaki-daemon peer list`"));
+            }
+            peer::write_config(dir, &peers).map_err(|e| format!("couldn't save: {e}"))?;
+            peer::forget_state(dir, name);
+            println!("stopped syncing with {name}. Files already copied stay on both servers.");
+            println!("On {name}, `mapaki-daemon revoke {}` drops this server's access too.", this_host());
+        }
+        Some(other) => return Err(format!("unknown peer command {other:?}; try add, list or remove")),
+    }
+    Ok(())
 }
 
 fn cmd_devices(dir: &Path) {
@@ -191,6 +271,14 @@ async fn main() {
                     eprintln!("{e}");
                     std::process::exit(1);
                 }
+            }
+            return;
+        }
+        Some("peer" | "peers") => {
+            let args: Vec<String> = std::env::args().skip(2).collect();
+            if let Err(e) = cmd_peer(&mapaki_dir(), &args) {
+                eprintln!("{e}");
+                std::process::exit(1);
             }
             return;
         }
@@ -262,12 +350,16 @@ async fn main() {
         }
     });
 
+    peer::start(dir.clone(), store.clone());
+
     let app = routes::router(AppState { store, auth });
 
-    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
-    println!("listening on {addr}");
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .expect("failed to bind");
+    // IPv6 and IPv4 both (`host.local` names often resolve to IPv6 first);
+    // IPv4 alone where IPv6 is switched off.
+    let listener = match tokio::net::TcpListener::bind(("::", port)).await {
+        Ok(l) => l,
+        Err(_) => tokio::net::TcpListener::bind(("0.0.0.0", port)).await.expect("failed to bind"),
+    };
+    println!("listening on port {port}");
     axum::serve(listener, app).await.expect("server error");
 }

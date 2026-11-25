@@ -30,12 +30,44 @@ mapaki-daemon pair-code          # a code for another device, plus the address t
 mapaki-daemon status             # running? at what address? which files?
 mapaki-daemon devices            # paired devices and when each was last seen
 mapaki-daemon revoke 2           # unpair device #2 (or by name); its access stops at once
+mapaki-daemon peer add <host> <code>   # keep this folder in sync with another server (below)
 ```
 
 You can also drop files straight into `~/mapaki` on the server, or edit them there.
 The daemon notices right away and records them as revisions. A file that's still
 being copied in is left alone until it has stopped changing for 2 seconds, so a
 half-written copy never reaches your devices.
+
+#### Two servers in sync
+
+Two mapaki servers can keep the same folder, both ways. Each can be switched off
+whenever you like, and it catches up when it's back. Set up the link on **one** of
+them; it carries changes in both directions:
+
+```sh
+# on lunchbox
+mapaki-daemon pair-code
+# on beex
+mapaki-daemon peer add lunchbox.local <code>   # port 8420 unless you give one
+mapaki-daemon peer list                        # connected? last synced when?
+mapaki-daemon peer remove lunchbox.local
+```
+
+- **How it syncs.** The server with the link (beex here) holds a live connection
+  to the other and syncs a second or so after a change on either side. Edits on
+  both sides are merged like any other upload: text files whose edits don't
+  overlap are 3-way merged. Anything else is kept twice, with the other server's
+  version under the original name and this server's as `name (conflict copy)`. An
+  edit beats a delete. Renames carry over.
+- **When one is off.** While the other server is off, the link checks once a
+  minute. It logs one line when the other server goes away and one when it's back,
+  and nothing in between. Changes made on either side in the meantime go across on
+  the next check.
+- **Linking two folders that already have files.** Files with the same name and
+  content are matched up. Same name with different content: both are kept, as
+  above.
+- **Addresses.** `.local` names are looked up through the system resolver, so mDNS
+  works even with the static release binary.
 
 ### Linux desktop client
 
